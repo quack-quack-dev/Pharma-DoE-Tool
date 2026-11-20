@@ -1,7 +1,5 @@
 # 💊 Group 5: Powder Characterization Tool
 
-Welcome to the repository for Group 5's Statistics and Design of Experiments (DoE) semester project at HHU Düsseldorf!
-
 This repository contains our automated evaluation tool for powder characterization. To comply with the strict project requirements, the entire application—including the mathematical models, the user interface, and the sample datasets—is bundled into a single, offline-capable Python script.
 
 ## 🚀 Features & How It Works
