@@ -1881,9 +1881,9 @@ HTML_INDEX: str = """<!DOCTYPE html>
       </div>
 
       <details class="card media-card" open>
-        <summary class="media-summary">Experiment Explanation &amp; Media Guide &mdash; Analytical Sieving (<code>media/</code>)</summary>
+        <summary class="media-summary">Experiment Guide &mdash; Analytical Sieving</summary>
         <div class="media-body" id="media-slot-sieve">
-          <p class="media-empty">Loading experiment media from <code>media/</code>&hellip;</p>
+          <p class="media-empty">Loading experiment media&hellip;</p>
         </div>
       </details>
     </section>
@@ -1977,9 +1977,9 @@ HTML_INDEX: str = """<!DOCTYPE html>
       </div>
 
       <details class="card media-card" open>
-        <summary class="media-summary">Experiment Explanation &amp; Media Guide &mdash; Bulk &amp; Tapped Density (<code>media/</code>)</summary>
+        <summary class="media-summary">Experiment Guide &mdash; Bulk &amp; Tapped Density</summary>
         <div class="media-body" id="media-slot-carr">
-          <p class="media-empty">Loading experiment media from <code>media/</code>&hellip;</p>
+          <p class="media-empty">Loading experiment media&hellip;</p>
         </div>
       </details>
     </section>
@@ -2067,9 +2067,9 @@ HTML_INDEX: str = """<!DOCTYPE html>
       </div>
 
       <details class="card media-card" open>
-        <summary class="media-summary">Experiment Explanation &amp; Media Guide &mdash; Angle of Repose (<code>media/</code>)</summary>
+        <summary class="media-summary">Experiment Guide &mdash; Angle of Repose</summary>
         <div class="media-body" id="media-slot-angle">
-          <p class="media-empty">Loading experiment media from <code>media/</code>&hellip;</p>
+          <p class="media-empty">Loading experiment media&hellip;</p>
         </div>
       </details>
     </section>
@@ -2137,9 +2137,9 @@ HTML_INDEX: str = """<!DOCTYPE html>
       </div>
 
       <details class="card media-card" open>
-        <summary class="media-summary">Experiment Explanation &amp; Media Guide &mdash; Flow Through an Orifice (<code>media/</code>)</summary>
+        <summary class="media-summary">Experiment Guide &mdash; Flow Through an Orifice</summary>
         <div class="media-body" id="media-slot-flow">
-          <p class="media-empty">Loading experiment media from <code>media/</code>&hellip;</p>
+          <p class="media-empty">Loading experiment media&hellip;</p>
         </div>
       </details>
     </section>
@@ -2208,9 +2208,9 @@ HTML_INDEX: str = """<!DOCTYPE html>
       </div>
 
       <details class="card media-card">
-        <summary class="media-summary">Lab Media Gallery &mdash; All External Files in <code>media/</code></summary>
+        <summary class="media-summary">Lab Media Gallery</summary>
         <div class="media-body" id="media-slot-batch">
-          <p class="media-empty">Loading media gallery from <code>media/</code>&hellip;</p>
+          <p class="media-empty">Loading media gallery&hellip;</p>
         </div>
       </details>
     </section>
@@ -2921,7 +2921,7 @@ body {
 }
 
 .media-summary::before {
-  content: "\25B8";
+  content: "\\25B8";
   font-size: 0.85rem;
   color: var(--primary, #2c6e5d);
   transition: transform 0.15s ease;
@@ -2960,23 +2960,6 @@ body {
   object-fit: contain;
   border-radius: 6px;
   background: #ffffff;
-}
-
-.media-caption {
-  font-size: 0.84rem;
-  color: var(--text-muted, #526066);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.media-caption code {
-  font-size: 0.78rem;
-  background: #edf2f0;
-  padding: 2px 6px;
-  border-radius: 4px;
 }
 
 .media-empty {
@@ -3555,16 +3538,6 @@ JS_APP: str = """(function () {
         });
         fig.appendChild(img);
       }
-
-      const cap = document.createElement("figcaption");
-      cap.className = "media-caption";
-      const titleSpan = document.createElement("span");
-      titleSpan.textContent = item.label || item.filename;
-      const codeEl = document.createElement("code");
-      codeEl.textContent = "media/" + item.filename;
-      cap.appendChild(titleSpan);
-      cap.appendChild(codeEl);
-      fig.appendChild(cap);
 
       grid.appendChild(fig);
     });
