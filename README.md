@@ -1,67 +1,42 @@
-# 🏛️ MASTER README & AGENT CONSTITUTION
+# 💊 Group 5: Powder Characterization Tool
 
-> **Purpose of this document:** This file serves as the universal "Master Law" governing all AI agents (Architect, Executor, Integrator, Sanitizer, and QA) working on the Statistics and DoE semester project (Group 5 — Powder Characterization, HHU Düsseldorf). All prompts, workflows, and code generation MUST strictly obey these core principles.
+Welcome to the repository for Group 5's Statistics and Design of Experiments (DoE) semester project at HHU Düsseldorf!
 
----
+This repository contains our automated evaluation tool for powder characterization. To comply with the strict project requirements, the entire application—including the mathematical models, the user interface, and the sample datasets—is bundled into a single, offline-capable Python script.
 
-## 🔒 CORE IMMUTABLE RULES
+## 🚀 Features & How It Works
 
-### 1️⃣ RULE #1: STRICT ENVIRONMENT CONSTRAINTS
+The tool is designed to process lab data without needing an internet connection. It is broken down into a few core analytical modules:
 
-* **The Principle:** The final deliverable must be exactly one Python script named `Group_5_tool.py`.
-* **Execution:** It must run completely offline on a fresh testing laptop. Agents are strictly forbidden from writing code that requires external API calls, internet downloads during runtime, or multi-file dependencies.
+- **Sieve Analysis (Ph. Eur. 2.9.38):** Calculates particle size distribution. It computes D10, D50, D90, and the Span using linear and logarithmic interpolation, and plots the Q3 cumulative curve and q3 density histogram.
+- **Density & Compressibility (Ph. Eur. 2.9.34 & 2.9.36):** Automatically calculates Bulk/Tapped Density, Carr's Index, and Hausner Ratio, classifying the flow character according to the pharmacopeia tables.
+- **Angle of Repose (Ph. Eur. 2.9.36):** Calculates the angle factoring in the pedestal base height and grades the flowability.
+- **Orifice Flow Rate (Ph. Eur. 2.9.16):** Processes Fixed Mass, Fixed Time, and Custom modes to standardize the flow rate to grams per second.
+- **Batch CSV Analyzer:** Upload a dataset (like our embedded `flowability_complete_dataset.csv`) to compute per-run metrics and group sample statistics (Mean ± SD) automatically.
 
-### 2️⃣ RULE #2: THE ZERO-ASSUMPTION & ANTI-CRASH PROTOCOL
+All mathematical operations, constants, and unit conversions include inline academic citations for easy reference during the code walkthrough.
 
-* **The Principle:** The tool must never crash.
-* **Execution:** Agents must not silently fill in blanks or assume perfect user input. The code must include strict error handling: bad or invalid inputs must return a clear, human-readable error message and safely halt the specific operation without crashing the program.
+## 💻 How to Run the Tool
 
-### 3️⃣ RULE #3: EXPLICIT GROUNDING & TRACEABILITY
+Because everything is packaged into one file, getting it running on a fresh laptop is very straightforward.
 
-* **The Principle:** Every mathematical equation, constant, unit conversion, and threshold must be explicitly traced to its academic source to prepare for the live code walkthrough.
-* **Execution:** When writing code, Executor agents MUST include brief inline comments strictly citing the source (e.g., `# Source: Ph. Eur. 2.9.36, Table 2.9.36.-2`). Agents must never invent variables or hallucinate formulas.
+1. **Install the required libraries:**
+   Make sure you have Python installed, then open your terminal and run:
 
-### 4️⃣ RULE #4: THE SANITIZER PROTOCOL (COMMENT MANAGEMENT)
+   ```bash
+   pip install numpy pandas matplotlib
+   ```
 
-* **The Principle:** QA Agents must evaluate pure logic without being influenced or "polluted" by the Executor's comments.
-* **Execution:**
-  1. **Executors** write the fully commented code (per Rule #3). This version is preserved and saved as the final submission file.
-  2. A **Sanitizer Agent** (or script) intercepts this code and strips out every line starting with `#` and all docstrings (`"""` / `'''`).
-  3. The **QA Agent** receives ONLY the bare, sanitized code to evaluate its mathematical logic and error handling blindly.
+2. **Run the script:**
+   Navigate to the folder containing the script and run:
 
-### 5️⃣ RULE #5: MODULARITY & CLEAN HANDOFFS
+   ```bash
+   python Group_5_tool.py
+   ```
 
-* **The Principle:** Agents exist in an automated assembly line. Output must be perfectly primed for the next agent.
-* **Execution:** Agents must output ONLY the requested code, plan, or review. Absolutely no conversational filler, greetings, or meta-commentary (e.g., "Here is the updated script!").
+   *(Depending on your system setup, you might need to use `python3` instead of `python`.)*
 
-### 6️⃣ RULE #6: TASK-SPECIFIC FORMATTING OBEDIENCE
+## 📝 Notes for the Group
 
-* **The Principle:** Formatting rules are dynamic and dictated by the Architect agent per task, not globally.
-* **Execution:** Agents must perfectly mirror the output structure requested in their specific sub-prompt. If instructed to output raw Python logic, they output only Python logic. If asked for a grading matrix by the QA agent, they output only the matrix.
-
----
-
-## 🤖 AGENT ASSEMBLY LINE ROLES
-
-1. **The Architect Agent** — Breaks project requirements into modular Developer Briefs enforcing the Master Law.
-2. **The Executor Agents** — Implement individual offline Python modules with strict inline academic citations.
-3. **The Integrator Agent** — Stitches modules into a single crash-proof, self-contained `Group_5_tool.py` (with embedded HTML/CSS/JS UI).
-4. **The Sanitizer Agent** — Strips all comments and docstrings into a bare copy for blind QA review.
-5. **The QA Agent** — Performs blind adversarial testing (dependency, vulnerability, and math logic checks) on the sanitized copy only.
-
----
-
-## 🚀 RUNNING THE TOOL
-
-```bash
-pip install numpy pandas matplotlib
-python3 Group_5_tool.py
-```
-
-The tool launches a self-contained local web interface (`http://127.0.0.1:<port>/`) with **zero external files** and **zero internet access required**.
-
-Sample laboratory datasets are provided in [`sample_data/`](sample_data/):
-- `example_PD01.csv`
-- `sieve_PD01.csv`
-- `sieve_reference.csv`
-- `flowability_complete_dataset.csv`
+- **Do not split the file:** The professor explicitly requires a single `Group_5_tool.py` script. All HTML, CSS, JavaScript, and data loaders are intentionally embedded inside this Python file to guarantee it runs flawlessly offline on the testing machine.
+- **Error Handling:** The tool is equipped with strict input validation. If bad data is entered, it will return a clean error message rather than crashing the program.
