@@ -3,8 +3,10 @@
 ===============================================================================
 Group 5 — Offline Pharmaceutical Powder Characterization Tool (Group_5_tool.py)
 ===============================================================================
-Single-file, completely offline laboratory web application (127.0.0.1) for
-Statistics & Design of Experiments (HHU Düsseldorf) implementing:
+Completely offline laboratory web application (127.0.0.1) for Statistics &
+Design of Experiments (HHU Düsseldorf), supporting portable ZIP distribution
+with external experiment media loaded dynamically from the relative media/
+subdirectory. Implements:
   1. Analytical Sieve Analysis (Q3 cumulative & q3 density distributions,
      linear / logarithmic D10, D50, D90 quantile interpolation, span, relative
      span, and embedded Matplotlib plots).
@@ -46,8 +48,10 @@ import importlib
 import io
 import json
 import math
+from pathlib import Path
 import sys
 import threading
+from urllib.parse import quote, unquote
 import webbrowser
 
 REQUIRED_PACKAGES = ("numpy", "pandas", "matplotlib")  # Source: Group 5 Offline Runtime Specification
@@ -83,8 +87,35 @@ import matplotlib.pyplot as plt
 
 
 # =============================================================================
-# PHYSICAL, VALIDATION & SERVER CONSTANTS
+# PHYSICAL, VALIDATION, MEDIA & SERVER CONSTANTS
 # =============================================================================
+
+# Source: Python Standard Library (pathlib) — dynamic relative path resolution
+# Always resolves media/ relative to this script's runtime location (never hardcoded absolute paths).
+SCRIPT_DIR: Path = Path(__file__).resolve().parent
+MEDIA_DIR: Path = SCRIPT_DIR / "media"
+
+# Source: IANA Media Types (RFC 6838) — offline MIME mapping for external media/ assets
+ALLOWED_MEDIA_TYPES: dict[str, str] = {
+    ".svg": "image/svg+xml; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".pdf": "application/pdf",
+}
+
+# Source: Group 5 Experiment Module Mapping (Ph. Eur. 2.9.16, 2.9.34, 2.9.36, 2.9.38)
+EXPERIMENT_MEDIA_PREFIXES: dict[str, tuple[str, ...]] = {
+    "sieve": ("sieve_analysis", "sieve"),
+    "carr": ("carr_hausner", "carr", "density", "hausner"),
+    "angle": ("angle_of_repose", "angle", "repose"),
+    "flow": ("orifice_flow", "flow_rate", "orifice", "flow"),
+    "batch": ("batch_flowability", "batch"),
+}
 
 # Source: IETF RFC 6335 (local unregistered user port on 127.0.0.1 loopback)
 PORT = 8765
@@ -1848,6 +1879,13 @@ HTML_INDEX: str = """<!DOCTYPE html>
           </div>
         </div>
       </div>
+
+      <details class="card media-card" open>
+        <summary class="media-summary">Experiment Explanation &amp; Media Guide &mdash; Analytical Sieving (<code>media/</code>)</summary>
+        <div class="media-body" id="media-slot-sieve">
+          <p class="media-empty">Loading experiment media from <code>media/</code>&hellip;</p>
+        </div>
+      </details>
     </section>
 
     <!-- =================================================================== -->
@@ -1937,6 +1975,13 @@ HTML_INDEX: str = """<!DOCTYPE html>
           </table>
         </div>
       </div>
+
+      <details class="card media-card" open>
+        <summary class="media-summary">Experiment Explanation &amp; Media Guide &mdash; Bulk &amp; Tapped Density (<code>media/</code>)</summary>
+        <div class="media-body" id="media-slot-carr">
+          <p class="media-empty">Loading experiment media from <code>media/</code>&hellip;</p>
+        </div>
+      </details>
     </section>
 
     <!-- =================================================================== -->
@@ -2020,6 +2065,13 @@ HTML_INDEX: str = """<!DOCTYPE html>
           </table>
         </div>
       </div>
+
+      <details class="card media-card" open>
+        <summary class="media-summary">Experiment Explanation &amp; Media Guide &mdash; Angle of Repose (<code>media/</code>)</summary>
+        <div class="media-body" id="media-slot-angle">
+          <p class="media-empty">Loading experiment media from <code>media/</code>&hellip;</p>
+        </div>
+      </details>
     </section>
 
     <!-- =================================================================== -->
@@ -2083,6 +2135,13 @@ HTML_INDEX: str = """<!DOCTYPE html>
           </div>
         </div>
       </div>
+
+      <details class="card media-card" open>
+        <summary class="media-summary">Experiment Explanation &amp; Media Guide &mdash; Flow Through an Orifice (<code>media/</code>)</summary>
+        <div class="media-body" id="media-slot-flow">
+          <p class="media-empty">Loading experiment media from <code>media/</code>&hellip;</p>
+        </div>
+      </details>
     </section>
 
     <!-- =================================================================== -->
@@ -2147,6 +2206,13 @@ HTML_INDEX: str = """<!DOCTYPE html>
           </div>
         </div>
       </div>
+
+      <details class="card media-card">
+        <summary class="media-summary">Lab Media Gallery &mdash; All External Files in <code>media/</code></summary>
+        <div class="media-body" id="media-slot-batch">
+          <p class="media-empty">Loading media gallery from <code>media/</code>&hellip;</p>
+        </div>
+      </details>
     </section>
   </main>
 
@@ -2834,6 +2900,90 @@ body {
     font-size: 0.86rem;
   }
 }
+
+.media-card {
+  margin-top: 16px;
+}
+
+.media-summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.98rem;
+  color: var(--primary-dark, #1f5346);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.media-summary::-webkit-details-marker {
+  display: none;
+}
+
+.media-summary::before {
+  content: "\25B8";
+  font-size: 0.85rem;
+  color: var(--primary, #2c6e5d);
+  transition: transform 0.15s ease;
+}
+
+.media-card[open] > .media-summary::before {
+  transform: rotate(90deg);
+}
+
+.media-body {
+  margin-top: 14px;
+}
+
+.media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.media-figure {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border, #d9e2df);
+  border-radius: 10px;
+  background: var(--surface-alt, #f9fbfa);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.media-figure img,
+.media-figure video {
+  width: 100%;
+  height: auto;
+  max-height: 360px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.media-caption {
+  font-size: 0.84rem;
+  color: var(--text-muted, #526066);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.media-caption code {
+  font-size: 0.78rem;
+  background: #edf2f0;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.media-empty {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--text-muted, #526066);
+}
 """
 
 JS_APP: str = """(function () {
@@ -3348,6 +3498,109 @@ JS_APP: str = """(function () {
   }
 
   /* -----------------------------------------------------------------------
+   * EXPERIMENT MEDIA LOADER (EXTERNAL media/ SUBDIRECTORY)
+   * --------------------------------------------------------------------- */
+  function renderMediaSlot(slotId, items, emptyMessage) {
+    const slot = $(slotId);
+    if (!slot) return;
+    slot.innerHTML = "";
+
+    if (!Array.isArray(items) || items.length === 0) {
+      const p = document.createElement("p");
+      p.className = "media-empty";
+      p.textContent = emptyMessage;
+      slot.appendChild(p);
+      return;
+    }
+
+    const grid = document.createElement("div");
+    grid.className = "media-grid";
+
+    items.forEach(function (item) {
+      const fig = document.createElement("figure");
+      fig.className = "media-figure";
+
+      if (item.kind === "video") {
+        const video = document.createElement("video");
+        video.controls = true;
+        video.preload = "metadata";
+        video.src = item.url;
+        video.addEventListener("error", function () {
+          video.remove();
+          const msg = document.createElement("p");
+          msg.className = "media-empty";
+          msg.textContent = "Unable to play video file: media/" + item.filename;
+          fig.insertBefore(msg, fig.firstChild);
+        });
+        fig.appendChild(video);
+      } else if (item.kind === "pdf") {
+        const link = document.createElement("a");
+        link.href = item.url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.className = "btn btn-secondary";
+        link.textContent = "Open PDF Document: " + item.label;
+        fig.appendChild(link);
+      } else {
+        const img = document.createElement("img");
+        img.src = item.url;
+        img.alt = item.label || item.filename;
+        img.loading = "lazy";
+        img.addEventListener("error", function () {
+          img.remove();
+          const msg = document.createElement("p");
+          msg.className = "media-empty";
+          msg.textContent = "Unable to load image file: media/" + item.filename;
+          fig.insertBefore(msg, fig.firstChild);
+        });
+        fig.appendChild(img);
+      }
+
+      const cap = document.createElement("figcaption");
+      cap.className = "media-caption";
+      const titleSpan = document.createElement("span");
+      titleSpan.textContent = item.label || item.filename;
+      const codeEl = document.createElement("code");
+      codeEl.textContent = "media/" + item.filename;
+      cap.appendChild(titleSpan);
+      cap.appendChild(codeEl);
+      fig.appendChild(cap);
+
+      grid.appendChild(fig);
+    });
+
+    slot.appendChild(grid);
+  }
+
+  async function loadExperimentMedia() {
+    const fallbackNote = "No media files found in media/ for this experiment. Add images (.svg, .png, .jpg, .gif, .webp) or videos (.mp4, .webm) to the media/ folder next to Group_5_tool.py.";
+    try {
+      const response = await fetch("/api/media");
+      if (!response.ok) {
+        throw new Error("HTTP " + response.status);
+      }
+      const data = await response.json();
+      if (!data || data.ok === false) {
+        throw new Error((data && data.error) ? data.error : "Unable to inspect media/ folder.");
+      }
+      const exps = data.experiments || {};
+      const missingDirNote = data.media_dir_exists
+        ? fallbackNote
+        : "The optional media/ folder was not found next to Group_5_tool.py. Place experiment diagrams or photos in a media/ subfolder to display them here.";
+
+      renderMediaSlot("media-slot-sieve", exps.sieve || [], missingDirNote);
+      renderMediaSlot("media-slot-carr", exps.carr || [], missingDirNote);
+      renderMediaSlot("media-slot-angle", exps.angle || [], missingDirNote);
+      renderMediaSlot("media-slot-flow", exps.flow || [], missingDirNote);
+      renderMediaSlot("media-slot-batch", data.all_files || [], missingDirNote);
+    } catch (_err) {
+      ["media-slot-sieve", "media-slot-carr", "media-slot-angle", "media-slot-flow", "media-slot-batch"].forEach(function (id) {
+        renderMediaSlot(id, [], "External media preview is currently unavailable.");
+      });
+    }
+  }
+
+  /* -----------------------------------------------------------------------
    * BOOTSTRAP
    * --------------------------------------------------------------------- */
   document.addEventListener("DOMContentLoaded", function () {
@@ -3382,6 +3635,9 @@ JS_APP: str = """(function () {
 
     // Quit button
     $("btn-quit").addEventListener("click", quitServer);
+
+    // Load external experiment diagrams/photos from media/ subdirectory
+    loadExperimentMedia();
 
     // Auto-load PD01 sieve sample for immediate one-click evaluation
     loadSieveSample("sieve_pd01");
@@ -3857,13 +4113,146 @@ CALCULATIONS = {
 
 
 # =============================================================================
+# EXTERNAL MEDIA DIRECTORY RESOLVER (DYNAMIC RELATIVE PATHS ONLY)
+# =============================================================================
+
+def _media_kind_for_suffix(suffix: str) -> str:
+    """Maps a validated lowercase file extension to a UI rendering category."""
+    if suffix in (".mp4", ".webm"):
+        return "video"
+    if suffix == ".pdf":
+        return "pdf"
+    return "image"
+
+
+def _humanize_media_label(rel_posix: str) -> str:
+    """Creates a clean display label from a relative media path."""
+    stem = Path(rel_posix).stem.replace("_", " ").replace("-", " ").strip()
+    return " ".join(word.capitalize() for word in stem.split()) if stem else rel_posix
+
+
+def resolve_media_file(rel_path: str) -> tuple[Path, str] | None:
+    """
+    Resolves a requested relative path strictly inside MEDIA_DIR
+    (Path(__file__).resolve().parent / "media") without using hardcoded
+    absolute paths. Blocks directory traversal, symlinks escaping media/,
+    and disallowed file extensions.
+    """
+    if not isinstance(rel_path, str) or not rel_path:
+        return None
+
+    decoded = unquote(rel_path)
+    if "\x00" in decoded or "\\" in decoded or decoded.startswith("/"):
+        return None
+
+    rel_candidate = Path(decoded)
+    if rel_candidate.is_absolute() or ".." in rel_candidate.parts:
+        return None
+
+    try:
+        media_root = MEDIA_DIR.resolve()
+        if not media_root.is_dir():
+            return None
+        candidate = (media_root / rel_candidate).resolve()
+        # Strict containment check prevents any path traversal or symlink escape
+        candidate.relative_to(media_root)
+    except (OSError, ValueError):
+        return None
+
+    if not candidate.is_file():
+        return None
+
+    suffix = candidate.suffix.lower()
+    content_type = ALLOWED_MEDIA_TYPES.get(suffix)
+    if content_type is None:
+        return None
+
+    return candidate, content_type
+
+
+def list_available_media() -> dict:
+    """
+    Scans MEDIA_DIR dynamically relative to the running script and categorizes
+    discovered offline media files by experiment tab. Never crashes if media/
+    is absent or unreadable.
+    """
+    experiments: dict[str, list[dict]] = {key: [] for key in EXPERIMENT_MEDIA_PREFIXES}
+    all_files: list[dict] = []
+
+    try:
+        media_root = MEDIA_DIR.resolve()
+        if not media_root.is_dir():
+            return {
+                "ok": True,
+                "media_dir_exists": False,
+                "experiments": experiments,
+                "all_files": all_files,
+            }
+    except OSError:
+        return {
+            "ok": True,
+            "media_dir_exists": False,
+            "experiments": experiments,
+            "all_files": all_files,
+        }
+
+    try:
+        discovered = sorted(media_root.rglob("*"), key=lambda p: p.as_posix().lower())
+    except OSError:
+        discovered = []
+
+    for entry in discovered:
+        try:
+            if not entry.is_file():
+                continue
+            resolved = entry.resolve()
+            rel_path = resolved.relative_to(media_root)
+        except (OSError, ValueError):
+            continue
+
+        # Skip hidden files or dotfiles (e.g., .DS_Store)
+        if any(part.startswith(".") for part in rel_path.parts):
+            continue
+
+        suffix = resolved.suffix.lower()
+        if suffix not in ALLOWED_MEDIA_TYPES:
+            continue
+
+        rel_posix = rel_path.as_posix()
+        item = {
+            "filename": rel_posix,
+            "label": _humanize_media_label(rel_posix),
+            "kind": _media_kind_for_suffix(suffix),
+            "url": "/media/" + quote(rel_posix, safe="/"),
+        }
+        all_files.append(item)
+
+        stem_lower = resolved.stem.lower()
+        parts_lower = [p.lower() for p in rel_path.parts[:-1]]
+        for exp_key, prefixes in EXPERIMENT_MEDIA_PREFIXES.items():
+            if any(
+                stem_lower.startswith(pref) or pref in parts_lower
+                for pref in prefixes
+            ):
+                experiments[exp_key].append(item)
+
+    return {
+        "ok": True,
+        "media_dir_exists": True,
+        "experiments": experiments,
+        "all_files": all_files,
+    }
+
+
+# =============================================================================
 # LOCAL OFFLINE HTTP SERVER
 # =============================================================================
 
 class RequestHandler(BaseHTTPRequestHandler):
     """
-    HTTP request handler serving embedded offline UI assets and JSON calculation
-    endpoints over 127.0.0.1 with strict anti-crash payload validation.
+    HTTP request handler serving embedded offline UI assets, dynamic relative
+    media/ experiment files, and JSON calculation endpoints over 127.0.0.1
+    with strict anti-crash payload validation.
     """
 
     def send_answer(self, status: int, content_type: str, data: bytes) -> None:
@@ -3889,6 +4278,25 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]
+
+        if path == "/api/media":
+            self.send_json(200, list_available_media())
+            return
+
+        if path.startswith("/media/"):
+            resolved = resolve_media_file(path[len("/media/"):])
+            if resolved is None:
+                self.send_answer(404, "text/plain; charset=utf-8", b"Media file not found")
+                return
+            file_path, content_type = resolved
+            try:
+                data = file_path.read_bytes()
+            except OSError:
+                self.send_answer(404, "text/plain; charset=utf-8", b"Unable to read media file")
+                return
+            self.send_answer(200, content_type, data)
+            return
+
         asset = EMBEDDED_WEB_ASSETS.get(path)
         if asset is None:
             self.send_answer(404, "text/plain; charset=utf-8", b"Page not found")

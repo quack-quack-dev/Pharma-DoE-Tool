@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 320" width="760" height="320" role="img" aria-label="Analytical Sieve Stack Schematic (Ph. Eur. 2.9.38)">
+  <rect width="760" height="320" rx="12" fill="#f9fbfa" stroke="#d9e2df" stroke-width="1.5"/>
+  <text x="28" y="34" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#1e292b">Analytical Sieve Stack Schematic (Ph. Eur. 2.9.38 / ISO 9276-1)</text>
+  <text x="28" y="54" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#526066">Ordered strictly from largest mesh aperture (top) down to collection pan (0 µm)</text>
+
+  <!-- Feed arrow -->
+  <line x1="215" y1="68" x2="215" y2="96" stroke="#2c6e5d" stroke-width="2.5"/>
+  <polygon points="215,103 208,92 222,92" fill="#2c6e5d"/>
+  <text x="230" y="84" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#2c6e5d">Powder Sample Input</text>
+
+  <!-- Sieve 1 (Top) -->
+  <rect x="115" y="106" width="200" height="38" rx="4" fill="#eaf3f0" stroke="#2c6e5d" stroke-width="2"/>
+  <line x1="120" y1="138" x2="310" y2="138" stroke="#2c6e5d" stroke-width="2" stroke-dasharray="10,6"/>
+  <circle cx="155" cy="126" r="5" fill="#4b3f63"/>
+  <circle cx="182" cy="128" r="4.5" fill="#4b3f63"/>
+  <circle cx="215" cy="125" r="5.5" fill="#4b3f63"/>
+  <circle cx="248" cy="128" r="4.5" fill="#4b3f63"/>
+  <circle cx="276" cy="126" r="5" fill="#4b3f63"/>
+  <text x="330" y="124" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#1e292b">Sieve 1 (Top): x₁ = 1600 µm</text>
+  <text x="330" y="140" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#526066">Retained coarse fraction m₁ = m_full,1 − m_empty,1</text>
+
+  <!-- Sieve 2 (Middle) -->
+  <rect x="115" y="148" width="200" height="38" rx="4" fill="#f1f7f5" stroke="#2c6e5d" stroke-width="2"/>
+  <line x1="120" y1="180" x2="310" y2="180" stroke="#2c6e5d" stroke-width="2" stroke-dasharray="6,4"/>
+  <circle cx="148" cy="170" r="3.5" fill="#4b3f63"/>
+  <circle cx="174" cy="171" r="3.2" fill="#4b3f63"/>
+  <circle cx="198" cy="169" r="3.6" fill="#4b3f63"/>
+  <circle cx="226" cy="171" r="3.2" fill="#4b3f63"/>
+  <circle cx="255" cy="170" r="3.4" fill="#4b3f63"/>
+  <circle cx="282" cy="171" r="3.2" fill="#4b3f63"/>
+  <text x="330" y="166" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#1e292b">Intermediate Sieves: xᵢ (e.g., 1000 → 125 µm)</text>
+  <text x="330" y="182" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#526066">Mass fraction ΔQ₃,ᵢ = (mᵢ / m_total) × 100%</text>
+
+  <!-- Sieve n-1 (Fine) -->
+  <rect x="115" y="190" width="200" height="38" rx="4" fill="#f6faf9" stroke="#2c6e5d" stroke-width="2"/>
+  <line x1="120" y1="222" x2="310" y2="222" stroke="#2c6e5d" stroke-width="2" stroke-dasharray="3,2"/>
+  <circle cx="145" cy="215" r="2.2" fill="#4b3f63"/>
+  <circle cx="165" cy="215" r="2.2" fill="#4b3f63"/>
+  <circle cx="185" cy="215" r="2.2" fill="#4b3f63"/>
+  <circle cx="205" cy="215" r="2.2" fill="#4b3f63"/>
+  <circle cx="225" cy="215" r="2.2" fill="#4b3f63"/>
+  <circle cx="245" cy="215" r="2.2" fill="#4b3f63"/>
+  <circle cx="265" cy="215" r="2.2" fill="#4b3f63"/>
+  <circle cx="285" cy="215" r="2.2" fill="#4b3f63"/>
+  <text x="330" y="208" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#1e292b">Finest Mesh Sieve: xₙ₋₁</text>
+  <text x="330" y="224" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#526066">Cumulative undersize Q₃(xᵢ) = sum of ΔQ₃ on smaller stages below</text>
+
+  <!-- Pan -->
+  <rect x="115" y="232" width="200" height="40" rx="4" fill="#e6ebea" stroke="#4b3f63" stroke-width="2"/>
+  <path d="M126 266 Q215 248 304 266 Z" fill="#97baaf" opacity="0.85"/>
+  <text x="215" y="256" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#1e292b">Collection Pan (0 µm)</text>
+  <text x="330" y="250" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#4b3f63">Pan (x = 0 µm): Fines &lt; xₙ₋₁</text>
+  <text x="330" y="266" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#526066">Q₃(0) = 0% · Density q₃ = ΔQ₃ / Δx · Span = D90 − D10</text>
+
+  <!-- Vibration arrows -->
+  <path d="M88 145 L88 235" stroke="#4b3f63" stroke-width="2" stroke-dasharray="4,3"/>
+  <polygon points="88,138 83,148 93,148" fill="#4b3f63"/>
+  <polygon points="88,242 83,232 93,232" fill="#4b3f63"/>
+  <text x="76" y="195" text-anchor="middle" transform="rotate(-90 76 195)" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#4b3f63">Mechanical Agitation</text>
+
+  <!-- Bottom note -->
+  <text x="28" y="302" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#526066">Tip: Weigh each sieve empty (m_empty) and with retained powder (m_full) after sieving to endpoint.</text>
+</svg>

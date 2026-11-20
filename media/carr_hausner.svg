@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 320" width="760" height="320" role="img" aria-label="Bulk and Tapped Density Schematic (Ph. Eur. 2.9.34 and 2.9.36)">
+  <rect width="760" height="320" rx="12" fill="#f9fbfa" stroke="#d9e2df" stroke-width="1.5"/>
+  <text x="28" y="34" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#1e292b">Bulk vs. Tapped Density Measurement (Ph. Eur. 2.9.34 &amp; 2.9.36)</text>
+  <text x="28" y="54" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#526066">Comparing unsettled poured volume (V₀) against mechanically tapped volume (V_f) for constant mass m</text>
+
+  <!-- Cylinder 1: Untapped V0 -->
+  <rect x="85" y="92" width="110" height="170" rx="4" fill="#ffffff" stroke="#2c6e5d" stroke-width="2"/>
+  <rect x="87" y="132" width="106" height="128" fill="#97baaf" opacity="0.55"/>
+  <line x1="87" y1="132" x2="193" y2="132" stroke="#2c6e5d" stroke-width="2.5"/>
+  <!-- Graduation ticks -->
+  <line x1="85" y1="115" x2="98" y2="115" stroke="#526066" stroke-width="1.2"/>
+  <line x1="85" y1="145" x2="103" y2="145" stroke="#526066" stroke-width="1.2"/>
+  <line x1="85" y1="175" x2="98" y2="175" stroke="#526066" stroke-width="1.2"/>
+  <line x1="85" y1="205" x2="103" y2="205" stroke="#526066" stroke-width="1.2"/>
+  <line x1="85" y1="235" x2="98" y2="235" stroke="#526066" stroke-width="1.2"/>
+  <rect x="70" y="262" width="140" height="10" rx="3" fill="#2c6e5d"/>
+  <text x="140" y="83" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#2c6e5d">1. Poured (Untapped)</text>
+  <text x="140" y="198" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#1e292b">V₀ [mL]</text>
+  <text x="140" y="216" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#1e292b">Loose packing</text>
+
+  <!-- Arrow between cylinders -->
+  <line x1="215" y1="178" x2="292" y2="178" stroke="#4b3f63" stroke-width="2.5"/>
+  <polygon points="300,178 288,171 288,185" fill="#4b3f63"/>
+  <text x="256" y="160" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#4b3f63">Tapping</text>
+  <text x="256" y="196" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#526066">10 → 500 → 1250 taps</text>
+
+  <!-- Cylinder 2: Tapped Vf -->
+  <rect x="315" y="92" width="110" height="170" rx="4" fill="#ffffff" stroke="#4b3f63" stroke-width="2"/>
+  <rect x="317" y="168" width="106" height="92" fill="#4b3f63" opacity="0.28"/>
+  <line x1="317" y1="168" x2="423" y2="168" stroke="#4b3f63" stroke-width="2.5"/>
+  <!-- Dashed reference line for V0 -->
+  <line x1="317" y1="132" x2="423" y2="132" stroke="#2c6e5d" stroke-width="1.5" stroke-dasharray="5,4"/>
+  <line x1="315" y1="115" x2="328" y2="115" stroke="#526066" stroke-width="1.2"/>
+  <line x1="315" y1="145" x2="333" y2="145" stroke="#526066" stroke-width="1.2"/>
+  <line x1="315" y1="175" x2="328" y2="175" stroke="#526066" stroke-width="1.2"/>
+  <line x1="315" y1="205" x2="333" y2="205" stroke="#526066" stroke-width="1.2"/>
+  <line x1="315" y1="235" x2="328" y2="235" stroke="#526066" stroke-width="1.2"/>
+  <rect x="300" y="262" width="140" height="10" rx="3" fill="#4b3f63"/>
+  <text x="370" y="83" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#4b3f63">2. Tapped (Settled)</text>
+  <text x="370" y="155" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#2c6e5d">ΔV = V₀ − V_f</text>
+  <text x="370" y="212" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#1e292b">V_f [mL]</text>
+  <text x="370" y="230" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#1e292b">Compact packing</text>
+
+  <!-- Formula Summary Box -->
+  <rect x="466" y="92" width="266" height="180" rx="8" fill="#ffffff" stroke="#d9e2df" stroke-width="1.5"/>
+  <text x="484" y="118" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#1e292b">Key Equations (V₀ ≥ V_f &gt; 0)</text>
+  <text x="484" y="146" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#2c6e5d" font-weight="600">Bulk Density:</text>
+  <text x="582" y="146" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#1e292b">ρ_bulk = m / V₀</text>
+  <text x="484" y="174" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#4b3f63" font-weight="600">Tapped Density:</text>
+  <text x="586" y="174" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#1e292b">ρ_tapped = m / V_f</text>
+  <text x="484" y="206" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#1e292b" font-weight="600">Carr's Index (CI):</text>
+  <text x="484" y="224" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#526066">CI = 100 × (V₀ − V_f) / V₀  [%]</text>
+  <text x="484" y="252" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#1e292b" font-weight="600">Hausner Ratio (HR):</text>
+  <text x="615" y="252" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#526066">HR = V₀ / V_f</text>
+
+  <text x="28" y="302" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#526066">Smaller volume reduction after tapping indicates lower interparticulate friction and better powder flowability.</text>
+</svg>

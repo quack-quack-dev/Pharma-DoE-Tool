@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 320" width="760" height="320" role="img" aria-label="Flow Rate Through an Orifice Schematic (Ph. Eur. 2.9.16 and 2.9.36)">
+  <rect width="760" height="320" rx="12" fill="#f9fbfa" stroke="#d9e2df" stroke-width="1.5"/>
+  <text x="28" y="34" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#1e292b">Flow Rate Through an Orifice (Ph. Eur. 2.9.16 &amp; 2.9.36)</text>
+  <text x="28" y="54" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#526066">Standardized mass discharge rate (g/s) and flow time per 100 g through a calibrated funnel orifice</text>
+
+  <!-- Funnel with powder -->
+  <polygon points="145,82 295,82 242,162 198,162" fill="#ffffff" stroke="#2c6e5d" stroke-width="2.2"/>
+  <polygon points="164,104 276,104 240,158 200,158" fill="#97baaf" opacity="0.65"/>
+  <rect x="206" y="162" width="28" height="22" fill="#ffffff" stroke="#2c6e5d" stroke-width="2.2"/>
+  <text x="220" y="136" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#1e292b">Powder (m)</text>
+
+  <!-- Orifice label -->
+  <line x1="238" y1="173" x2="292" y2="173" stroke="#4b3f63" stroke-width="1.5"/>
+  <text x="298" y="177" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#4b3f63">Orifice (nozzle)</text>
+
+  <!-- Flowing stream -->
+  <line x1="220" y1="184" x2="220" y2="226" stroke="#2c6e5d" stroke-width="3" stroke-dasharray="4,3"/>
+  <polygon points="220,232 214,222 226,222" fill="#2c6e5d"/>
+
+  <!-- Beaker + Balance -->
+  <path d="M170 218 L176 254 L264 254 L270 218" fill="none" stroke="#1e292b" stroke-width="2"/>
+  <path d="M180 252 Q220 226 260 252 Z" fill="#97baaf" opacity="0.8"/>
+  <rect x="148" y="256" width="144" height="28" rx="5" fill="#e6ebea" stroke="#4b3f63" stroke-width="2"/>
+  <rect x="184" y="263" width="72" height="14" rx="2" fill="#ffffff" stroke="#526066" stroke-width="1"/>
+  <text x="220" y="274" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10.5" font-weight="700" fill="#1e292b">100.0 g</text>
+
+  <!-- Stopwatch icon -->
+  <circle cx="96" cy="176" r="28" fill="#ffffff" stroke="#4b3f63" stroke-width="2.2"/>
+  <rect x="90" y="141" width="12" height="7" rx="2" fill="#4b3f63"/>
+  <line x1="96" y1="176" x2="96" y2="158" stroke="#2c6e5d" stroke-width="2.2"/>
+  <line x1="96" y1="176" x2="110" y2="182" stroke="#4b3f63" stroke-width="2"/>
+  <text x="96" y="220" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#4b3f63">Time t [s]</text>
+
+  <!-- Method & Equations Card -->
+  <rect x="434" y="84" width="298" height="200" rx="8" fill="#ffffff" stroke="#d9e2df" stroke-width="1.5"/>
+  <text x="452" y="110" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#1e292b">Measurement Modes &amp; Formulas</text>
+  <text x="452" y="138" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#2c6e5d">1. Fixed Mass (Ph. Eur. 2.9.16):</text>
+  <text x="452" y="155" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#526066">Constant m = 100.0 g → measure flow time t [s]</text>
+  <text x="452" y="182" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#4b3f63">2. Fixed Time (Ph. Eur. 2.9.36):</text>
+  <text x="452" y="199" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#526066">Constant t = 10.0 s → measure discharged mass m [g]</text>
+  <text x="452" y="226" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#1e292b">3. Custom Mode:</text>
+  <text x="556" y="226" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#526066">Enter both m [g] and t [s]</text>
+  <line x1="452" y1="240" x2="714" y2="240" stroke="#e2e8e6" stroke-width="1.2"/>
+  <text x="452" y="260" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#2c6e5d">Flow Rate: ṁ = m / t [g/s]</text>
+  <text x="452" y="276" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#526066">Standardized Time: t₁₀₀ = (100 · t) / m [s / 100 g]</text>
+
+  <text x="28" y="304" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#526066">Ensure the funnel is mounted vibration-free and record discharge time from shutter opening until flow stops.</text>
+</svg>
