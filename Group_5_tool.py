@@ -43,16 +43,21 @@ from __future__ import annotations
 
 import base64
 import csv
+from datetime import datetime
+import hashlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import importlib
 import io
 import json
 import math
 from pathlib import Path
+import re
 import sys
+import textwrap
 import threading
 from urllib.parse import quote, unquote
 import webbrowser
+import zipfile
 
 REQUIRED_PACKAGES = ("numpy", "pandas", "matplotlib")  # Source: Group 5 Offline Runtime Specification
 
@@ -87,8 +92,11 @@ import matplotlib.pyplot as plt
 
 
 # =============================================================================
-# PHYSICAL, VALIDATION, MEDIA & SERVER CONSTANTS
+# PHYSICAL, VALIDATION, MEDIA, COMPARISON & SERVER CONSTANTS
 # =============================================================================
+
+# Source: Group 5 Software Versioning Metadata (embedded in exported PNG/ZIP reports)
+TOOL_VERSION = "Group 5 Powder Characterization Tool v1.2"
 
 # Source: Python Standard Library (pathlib) — dynamic relative path resolution
 # Always resolves media/ relative to this script's runtime location (never hardcoded absolute paths).
@@ -116,6 +124,52 @@ EXPERIMENT_MEDIA_PREFIXES: dict[str, tuple[str, ...]] = {
     "flow": ("orifice_flow", "flow_rate", "orifice", "flow"),
     "batch": ("batch_flowability", "batch"),
 }
+
+# Source: Group 5 Multi-Batch UI Performance Bound (limits concurrent plot generation to <= 10 batches)
+MAX_BATCH_FILES = 10
+
+# Source: Ph. Eur. 2.9.38 (Analytical Sieving) — maximum acceptable gravimetric mass loss = 5% (recovery >= 95%)
+PH_EUR_MAX_SIEVING_LOSS_PCT = 5.0
+
+# Source: Color-blind-safe categorical palette + distinct marker encoding for multi-batch plots
+COMPARE_COLORS = (
+    "#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4",
+    "#008300", "#6250d6", "#e34948", "#52514e", "#8c8b85",
+)
+COMPARE_MARKERS = ("o", "s", "^", "D", "v", "P", "X", "h", "<", ">")
+COMPARE_INK = "#0b0b0b"
+COMPARE_INK_SOFT = "#52514e"
+COMPARE_GRID = "#e4e3de"
+COMPARE_HIST_STYLES = ("grouped", "panels")
+
+# Source: Ph. Eur. 2.9.38 / ISO 9276-1 / Ph. Eur. 2.9.36 — optional acceptance limit parameter registry
+LIMIT_FIELDS = (
+    ("d10", "D10", "µm"),
+    ("d50", "D50", "µm"),
+    ("d90", "D90", "µm"),
+    ("relative_span", "Relative span", "-"),
+    ("recovery_pct", "Recovery", "%"),
+    ("carr", "Carr index", "%"),
+    ("hausner", "Hausner ratio", "-"),
+    ("aor", "Angle of repose", "deg"),
+)
+
+# Source: Ph. Eur. 2.9.34 & 2.9.36 — optional per-CSV flowability columns read from first data row
+COMPARE_FLOW_COLUMNS = (
+    "powder_mass_g",
+    "v0_ml",
+    "vf_ml",
+    "aor_height_mm",
+    "aor_diameter_mm",
+    "aor_base_height_mm",
+)
+
+# Source: Ph. Eur. 2.9.36, Tables 2.9.36.-1 & 2.9.36.-2 — "Good" flowability upper limits for shaded plot zone
+COMPARE_FLOW_SPECS = (
+    ("carr", "Carr index", "%", 15.0),
+    ("hausner", "Hausner ratio", "", 1.18),
+    ("aor", "Angle of repose", "°", 35.0),
+)
 
 # Source: IETF RFC 6335 (local unregistered user port on 127.0.0.1 loopback)
 PORT = 8765
@@ -1147,7 +1201,7 @@ def mark_quantiles(ax, metrics: dict, quantile_lines: bool = False) -> None:
         label_boxes.append(move_label(*best_spot))
 
 
-def plot_q3_cumulative(df_sieve: pd.DataFrame, metrics: dict):
+def plot_q3_cumulative(df_sieve: pd.DataFrame, metrics: dict, plot_color: str = PLOT_COLOR):
     """
     Plots the cumulative undersize particle size distribution Q3 [%] against
     logarithmic sieve aperture x [µm] according to Ph. Eur. 2.9.38 and ISO 9276-1.
@@ -1185,7 +1239,7 @@ def plot_q3_cumulative(df_sieve: pd.DataFrame, metrics: dict):
     ax.plot(
         x_sizes,
         q3_cum_vals,
-        color=PLOT_COLOR,
+        color=plot_color,
         marker="o",
         linewidth=2.4,
         markersize=6.5,
@@ -1197,7 +1251,7 @@ def plot_q3_cumulative(df_sieve: pd.DataFrame, metrics: dict):
         ax.plot(
             [x_max, x_max_um],
             [float(q3_cum_vals[-1]), 100.0],
-            color=PLOT_COLOR,
+            color=plot_color,
             linestyle="--",
             linewidth=1.8,
             marker="o",
@@ -1209,7 +1263,7 @@ def plot_q3_cumulative(df_sieve: pd.DataFrame, metrics: dict):
     return fig
 
 
-def plot_q3_density(df_sieve: pd.DataFrame, metrics: dict):
+def plot_q3_density(df_sieve: pd.DataFrame, metrics: dict, plot_color: str = PLOT_COLOR):
     """
     Plots the mass density particle size distribution q3 [%/µm] as a
     class-width histogram against logarithmic particle size x [µm] according
@@ -1252,7 +1306,7 @@ def plot_q3_density(df_sieve: pd.DataFrame, metrics: dict):
         q3_vals,
         width=np.maximum(upper - lower_plot, 0.0),
         align="edge",
-        color=PLOT_COLOR,
+        color=plot_color,
         edgecolor="#1f2933",
         alpha=0.88,
     )
@@ -1715,13 +1769,767 @@ def analyze_flowability_batch(csv_text: str) -> dict:
 
 
 # =============================================================================
+# MODULE C2: MULTI-BATCH SIEVE COMPARISON, POWDER BALANCE, LIMITS & EXPORTS
+# Sources:
+#   - Ph. Eur. 2.9.38 (Analytical sieving: mass recovery & <= 5% mass loss limit)
+#   - Ph. Eur. 2.9.34 & 2.9.36 (Density, Carr's Index, Hausner Ratio, Angle of Repose)
+#   - ISO 9276-1 & USP <429> (Cumulative Q3, density q3, D10/D50/D90, Relative Span)
+# =============================================================================
+
+def _opt_float(value, label: str) -> float | None:
+    """Returns None for empty/blank input, otherwise parses a strict finite float."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return parse_finite_float(value, label)
+
+
+def _rows_to_lists(rows) -> tuple[list[float], list[float], list[float]]:
+    """Validates and converts UI/API sieve table rows into numeric (mesh, empty, full) lists."""
+    if not isinstance(rows, list) or len(rows) < MIN_SIEVE_STAGES:
+        raise ValueError(f"At least {MIN_SIEVE_STAGES} sieve rows (including the pan) are required.")
+    mesh: list[float] = []
+    empty: list[float] = []
+    full: list[float] = []
+    for i, row in enumerate(rows, 1):
+        if not isinstance(row, (list, tuple)) or len(row) != 3:
+            raise ValueError(f"Row {i}: expected [mesh_um, empty_g, full_g].")
+        mesh.append(parse_finite_float(row[0], f"Row {i}, Mesh size [µm]"))
+        empty.append(parse_finite_float(row[1], f"Row {i}, Empty sieve [g]"))
+        full.append(parse_finite_float(row[2], f"Row {i}, Sieve + residue [g]"))
+    return mesh, empty, full
+
+
+def _xmax_and_mode(inputs: dict) -> tuple[float, str]:
+    """Parses and validates optional upper particle size bound x_max_um and interpolation mode."""
+    raw_xmax = inputs.get("x_max_um", inputs.get("x_max"))
+    x_max = _opt_float(raw_xmax, "Upper size limit x_max [µm]")
+    x_max = DEFAULT_X_MAX_UM if x_max is None else x_max
+    if x_max <= 0.0:
+        raise ValueError("Upper size limit x_max must be > 0 µm.")
+    if x_max > MAX_SIEVE_SIZE_UM:
+        raise ValueError(
+            f"Upper size limit x_max ({x_max:g} µm) exceeds maximum supported limit ({MAX_SIEVE_SIZE_UM:g} µm)."
+        )
+    raw_mode = inputs.get("interp_mode", inputs.get("interpolation_mode", inputs.get("mode", "linear")))
+    if not isinstance(raw_mode, str):
+        raise ValueError("Interpolation mode must be 'linear' or 'log'.")
+    mode = raw_mode.strip().lower()
+    if mode not in ("linear", "log"):
+        raise ValueError("Interpolation mode must be 'linear' or 'log'.")
+    return x_max, mode
+
+
+def _clean_details(raw) -> dict[str, str]:
+    """Keeps only non-empty formulation metadata entries with bounded string lengths."""
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(k).strip()[:60]: str(v).strip()[:200]
+        for k, v in raw.items()
+        if str(k).strip() and str(v).strip()
+    }
+
+
+def _read_first_csv_data_row(csv_text: str) -> tuple[list[str], list[str]] | None:
+    """Safely extracts stripped header names and first non-empty data row from CSV text."""
+    if not isinstance(csv_text, str) or not csv_text.strip():
+        return None
+    try:
+        rows = [
+            r for r in csv.reader(io.StringIO(csv_text.lstrip("\ufeff")))
+            if r and any(c.strip() for c in r)
+        ]
+    except csv.Error as exc:
+        raise ValueError(f"Failed to parse optional CSV columns: {exc}") from exc
+    if len(rows) < 2:
+        return None
+    headers = [h.lstrip("\ufeff").strip() for h in rows[0]]
+    return headers, rows[1]
+
+
+def _optional_columns(csv_text: str) -> tuple[dict[str, str], float | None]:
+    """Reads optional first-row metadata columns: initial_mass_g and formulation details."""
+    parsed = _read_first_csv_data_row(csv_text)
+    details: dict[str, str] = {}
+    initial: float | None = None
+    if parsed is None:
+        return details, initial
+
+    headers, first_row = parsed
+    for head, raw_val in zip(headers, first_row):
+        val = raw_val.strip()
+        if not head or not val or head in REQUIRED_SIEVE_COLUMNS:
+            continue
+        key = head.lower()
+        if key == "initial_mass_g":
+            initial = parse_finite_float(val, "initial_mass_g")
+        elif key in COMPARE_FLOW_COLUMNS:
+            continue
+        else:
+            details[head[:60]] = val[:200]
+    return details, initial
+
+
+def _flow_columns(csv_text: str) -> dict[str, float]:
+    """Reads optional flowability columns from the first data row of a sieve CSV."""
+    parsed = _read_first_csv_data_row(csv_text)
+    raw: dict[str, float] = {}
+    if parsed is None:
+        return raw
+
+    headers, first_row = parsed
+    for head, raw_val in zip(headers, first_row):
+        key = head.lower()
+        if key in COMPARE_FLOW_COLUMNS and raw_val.strip():
+            raw[key] = parse_finite_float(raw_val, head)
+    return raw
+
+
+def _flow_metrics(raw: dict[str, float]) -> dict:
+    """Computes Carr/Hausner and Angle of Repose metrics from complete optional CSV column groups."""
+    out: dict = {}
+    if all(k in raw for k in ("powder_mass_g", "v0_ml", "vf_ml")):
+        # Source: Ph. Eur. 2.9.34 & 2.9.36 — bulk/tapped density, Carr's Index, Hausner Ratio
+        res = analyze_carr_hausner(raw["powder_mass_g"], raw["v0_ml"], raw["vf_ml"])
+        out.update(
+            bulk=res["bulk_density_g_ml"],
+            tapped=res["tapped_density_g_ml"],
+            carr=res["carr_index_pct"],
+            carr_rating=res["ci_rating"],
+            hausner=res["hausner_ratio"],
+            hausner_rating=res["hr_rating"],
+        )
+    if all(k in raw for k in ("aor_height_mm", "aor_diameter_mm")):
+        # Source: Ph. Eur. 2.9.36 — fixed-base cone Angle of Repose in millimeters
+        res = analyze_angle_of_repose(
+            raw["aor_height_mm"],
+            raw["aor_diameter_mm"],
+            base_height=raw.get("aor_base_height_mm", 0.0),
+            unit="mm",
+        )
+        out.update(aor=res["angle_of_repose_deg"], aor_rating=res["aor_rating"])
+    return out
+
+
+def _safe_filename(name: str) -> str:
+    """Sanitizes a batch display name into a portable ASCII ZIP/PNG filename stem."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(name)).strip("_") or "batch"
+
+
+def _escape_mpl(text: str) -> str:
+    """Escapes literal dollar signs so Matplotlib does not trigger mathtext parsing."""
+    return str(text).replace("$", r"\$")
+
+
+def _hash_sieve_rows(mesh: list[float], empty: list[float], full: list[float]) -> str:
+    """Computes a deterministic 12-hex-character SHA-256 fingerprint of raw sieve measurements."""
+    # Source: FIPS 180-4 (SHA-256 cryptographic hash for data traceability in exported reports)
+    return hashlib.sha256(json.dumps([mesh, empty, full]).encode("utf-8")).hexdigest()[:12]
+
+
+def _details_text(details: dict[str, str]) -> str:
+    """Formats cleaned formulation metadata dictionary as a single semicolon-separated line."""
+    return "; ".join(f"{k}: {v}" for k, v in details.items())
+
+
+def _compute_powder_balance(retained_g: float, initial_g: float | None) -> dict | None:
+    """
+    Computes retained vs. lost powder gravimetric mass balance and Ph. Eur. 2.9.38
+    5% mass-loss compliance check. Returns None when initial_g is not provided.
+    """
+    if initial_g is None:
+        return None
+    initial_val = parse_finite_float(initial_g, "Initial sample mass [g]")
+    retained_val = parse_finite_float(retained_g, "Total retained mass [g]")
+    # Source: Ph. Eur. 2.9.38 — initial test sample mass must be strictly positive (> 0 g)
+    if initial_val <= 0.0:
+        raise ValueError("Initial sample mass must be > 0 g.")
+
+    # Source: Ph. Eur. 2.9.38 — gravimetric mass loss m_lost = m_initial - m_retained
+    lost_g = initial_val - retained_val
+    # Source: Ph. Eur. 2.9.38 — gravimetric recovery [%] = (m_retained / m_initial) * 100
+    recovery_pct = (retained_val / initial_val) * 100.0
+    # Source: Ph. Eur. 2.9.38 — percentage mass loss [%] = (m_lost / m_initial) * 100
+    loss_pct = (lost_g / initial_val) * 100.0
+    if not (math.isfinite(lost_g) and math.isfinite(recovery_pct) and math.isfinite(loss_pct)):
+        raise ValueError("Numerical overflow while computing powder mass balance.")
+
+    return {
+        "initial": initial_val,
+        "retained": retained_val,
+        "lost": lost_g,
+        "recovery_pct": recovery_pct,
+        "loss_pct": loss_pct,
+        # Source: Ph. Eur. 2.9.38 — sieving mass loss should not exceed 5% of initial mass
+        "exceeds_loss_limit": loss_pct > PH_EUR_MAX_SIEVING_LOSS_PCT,
+    }
+
+
+def _collect_limit_values(metrics: dict, bal: dict | None, flow: dict | None = None) -> dict:
+    """Assembles numeric parameter values checked against optional user acceptance limits."""
+    flow = flow or {}
+    return {
+        "d10": metrics["D10_um"],
+        "d50": metrics["D50_um"],
+        "d90": metrics["D90_um"],
+        "relative_span": metrics["relative_span"],
+        "recovery_pct": None if bal is None else bal["recovery_pct"],
+        "carr": flow.get("carr"),
+        "hausner": flow.get("hausner"),
+        "aor": flow.get("aor"),
+    }
+
+
+def _parse_limits(raw) -> dict[str, tuple[float | None, float | None]]:
+    """Validates optional min/max acceptance limit intervals for each supported parameter."""
+    limits: dict[str, tuple[float | None, float | None]] = {}
+    if not isinstance(raw, dict):
+        return limits
+    for key, label, _unit in LIMIT_FIELDS:
+        entry = raw.get(key)
+        if not isinstance(entry, dict):
+            continue
+        lo = _opt_float(entry.get("min"), f"{label} limit (min)")
+        hi = _opt_float(entry.get("max"), f"{label} limit (max)")
+        if lo is None and hi is None:
+            continue
+        if lo is not None and hi is not None and lo > hi:
+            raise ValueError(f"{label}: minimum limit ({lo:g}) is larger than maximum limit ({hi:g}).")
+        limits[key] = (lo, hi)
+    return limits
+
+
+def _range_text(lo: float | None, hi: float | None) -> str:
+    """Formats a one-sided or two-sided acceptance limit range for display."""
+    if lo is not None and hi is not None:
+        return f"{lo:g} - {hi:g}"
+    return f">= {lo:g}" if lo is not None else f"<= {hi:g}"
+
+
+def _check_limits(
+    values: dict,
+    limits: dict[str, tuple[float | None, float | None]],
+) -> tuple[list[list[str]], str | None, list[str]]:
+    """Evaluates measured values against optional min/max acceptance criteria."""
+    rows: list[list[str]] = []
+    failed: list[str] = []
+    for key, label, unit in LIMIT_FIELDS:
+        if key not in limits:
+            continue
+        lo, hi = limits[key]
+        val = values.get(key)
+        if val is None or not math.isfinite(float(val)):
+            status = "No value"
+            val_str = "N/A"
+        else:
+            fval = float(val)
+            if (lo is None or fval >= lo) and (hi is None or fval <= hi):
+                status = "Within limits"
+            else:
+                status = "Outside limits"
+                failed.append(label)
+            val_str = f"{fval:.2f}"
+        rows.append([f"{label} [{unit}]", val_str, _range_text(lo, hi), status])
+
+    if not rows:
+        return rows, None, failed
+    if failed:
+        return rows, "Outside limits", failed
+    overall = "Within limits" if all(r[3] == "Within limits" for r in rows) else "Incomplete"
+    return rows, overall, failed
+
+
+def _meta_lines(
+    name: str,
+    mesh: list[float],
+    empty: list[float],
+    full: list[float],
+    metrics: dict,
+    bal: dict | None,
+    details: dict[str, str],
+    flow: dict | None = None,
+) -> list[str]:
+    """Builds traceable metadata footer lines for exported plots and metadata.txt."""
+    lines = [
+        f"{TOOL_VERSION} | created {datetime.now():%Y-%m-%d %H:%M}",
+        f"Sample: {name} | interpolation: {metrics['interpolation_mode']} | x_max: {metrics['x_max_um']:g} um"
+        f" | data hash: {_hash_sieve_rows(mesh, empty, full)}",
+        f"D10/D50/D90: {metrics['D10_um']:.1f} / {metrics['D50_um']:.1f} / {metrics['D90_um']:.1f} um"
+        f" | relative span: {metrics['relative_span']:.3f} | retained mass: {metrics['total_mass_g']:.2f} g",
+    ]
+    if bal is not None:
+        loss_flag = " [>5% Ph. Eur. 2.9.38 loss warning]" if bal["exceeds_loss_limit"] else ""
+        lines.append(
+            f"Initial mass: {bal['initial']:.2f} g | lost: {bal['lost']:.2f} g"
+            f" | recovery: {bal['recovery_pct']:.1f} %{loss_flag}"
+        )
+    if flow:
+        parts = []
+        if "carr" in flow:
+            parts.append(
+                f"Carr {flow['carr']:.1f} % ({flow['carr_rating']}) | "
+                f"Hausner {flow['hausner']:.3f} ({flow['hausner_rating']})"
+            )
+        if "aor" in flow:
+            parts.append(f"angle of repose {flow['aor']:.1f} deg ({flow['aor_rating']})")
+        if parts:
+            lines.append("Flow: " + " | ".join(parts))
+    if details:
+        lines.append("Details: " + _details_text(details))
+    return lines
+
+
+def _png_with_metadata(fig, lines: list[str], title: str) -> bytes:
+    """Appends a monospace metadata footer to a Matplotlib figure, embeds PNG tEXt tags, and closes fig."""
+    safe_lines = [str(ln) for ln in (lines or [])]
+    wrapped = [w for ln in safe_lines for w in (textwrap.wrap(ln, 150) or [""])]
+    width, height = fig.get_size_inches()
+    extra = 0.14 * max(len(wrapped), 1) + 0.12
+    try:
+        fig.set_size_inches(width, height + extra)
+        fig.tight_layout(rect=(0.0, extra / (height + extra), 1.0, 1.0))
+        if wrapped:
+            fig.text(
+                0.01,
+                0.006,
+                "\n".join(wrapped),
+                fontsize=6.3,
+                color="#444444",
+                va="bottom",
+                ha="left",
+                family="monospace",
+            )
+        desc = " | ".join(safe_lines).encode("ascii", "replace").decode("ascii")
+        buf = io.BytesIO()
+        fig.savefig(
+            buf,
+            format="png",
+            dpi=130,
+            metadata={"Title": str(title), "Software": TOOL_VERSION, "Description": desc},
+        )
+        return buf.getvalue()
+    finally:
+        plt.close(fig)
+
+
+def _chart_payload(
+    title: str,
+    filename: str,
+    fig,
+    lines: list[str],
+    batch: str | None = None,
+) -> tuple[dict, bytes]:
+    """Serializes a Matplotlib figure with metadata footer to base64 JSON payload + raw PNG bytes."""
+    raw = _png_with_metadata(fig, lines, title)
+    return (
+        {
+            "title": title,
+            "filename": filename,
+            "batch": batch,
+            "png": base64.b64encode(raw).decode("ascii"),
+        },
+        raw,
+    )
+
+
+def _zip_b64(files: dict[str, bytes]) -> str:
+    """Bundles in-memory byte files into a compressed ZIP archive encoded as base64 ASCII."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _style_compare_axes(ax) -> None:
+    """Applies clean editorial styling (open top/right spines, subtle grid) to comparison plots."""
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color("#b9b8b2")
+    ax.tick_params(colors=COMPARE_INK_SOFT, labelsize=9, length=3)
+    ax.grid(True, which="major", color=COMPARE_GRID, linewidth=0.9)
+    ax.grid(True, which="minor", color=COMPARE_GRID, linewidth=0.4, alpha=0.6)
+    ax.set_axisbelow(True)
+    ax.set_facecolor("#ffffff")
+
+
+def _compare_fig_axes(
+    title: str,
+    subtitle: str,
+    xlabel: str,
+    ylabel: str,
+    x_lo: float,
+    x_hi: float,
+    y_top: float,
+    logx: bool = True,
+):
+    """Creates a formatted comparison Matplotlib figure and axes with safe log/linear bounds."""
+    if not math.isfinite(y_top) or y_top <= 0.0:
+        y_top = 1.0
+    fig, ax = plt.subplots(figsize=(9.2, 5.0))
+    fig.patch.set_facecolor("#ffffff")
+    if logx:
+        if not (math.isfinite(x_lo) and math.isfinite(x_hi)) or x_lo <= 0.0 or x_hi <= x_lo:
+            plt.close(fig)
+            raise ValueError(f"Invalid logarithmic x-axis bounds ({x_lo}, {x_hi}).")
+        if x_lo < 1e-100 or x_hi > 1e100:
+            plt.close(fig)
+            raise ValueError("Logarithmic x-axis bounds exceed safe Matplotlib LogLocator range [1e-100, 1e100].")
+        # Source: ISO 9276-1; Ph. Eur. 2.9.38 (logarithmic particle size abscissa)
+        ax.set_xscale("log")
+        ax.set_xlim(x_lo, x_hi)
+    ax.set_ylim(0.0, y_top)
+    ax.set_xlabel(xlabel, fontsize=10.5, color=COMPARE_INK_SOFT, labelpad=6)
+    ax.set_ylabel(ylabel, fontsize=10.5, color=COMPARE_INK_SOFT, labelpad=6)
+    fig.suptitle(title, x=0.012, y=0.985, ha="left", fontsize=14, fontweight="bold", color=COMPARE_INK)
+    if subtitle:
+        ax.set_title(subtitle, loc="left", fontsize=9, color=COMPARE_INK_SOFT, pad=8)
+    _style_compare_axes(ax)
+    return fig, ax
+
+
+def _compare_x_range(batches: list[dict]) -> tuple[float, float]:
+    """Computes safe common logarithmic x-axis limits spanning all compared batches."""
+    positive = [x for b in batches for x in b["mesh"] if x > 0.0]
+    if not positive:
+        raise ValueError("No positive sieve mesh sizes available for comparison plot.")
+    x_lo = min(50.0, min(positive) * 0.6)
+    x_hi = max(2500.0, max(float(b["m"]["x_max_um"]) for b in batches) * 1.25)
+    if not (math.isfinite(x_lo) and math.isfinite(x_hi)) or x_lo < 1e-100 or x_hi > 1e100:
+        raise ValueError("Batch particle sizes exceed safe Matplotlib logarithmic plotting range.")
+    return x_lo, x_hi
+
+
+def _legend_label(b: dict) -> str:
+    return _escape_mpl(f"{b['name']}  (D50 {b['m']['D50_um']:.0f} µm)")
+
+
+def _corner_box(ax, lines: list[str], loc: str = "lower right") -> None:
+    """Places a compact white callout box with key batch summary figures in an axes corner."""
+    pos_map = {
+        "lower right": (0.985, 0.03, "right", "bottom"),
+        "upper right": (0.985, 0.97, "right", "top"),
+        "mid right": (0.985, 0.84, "right", "top"),
+        "upper left": (0.015, 0.97, "left", "top"),
+        "lower left": (0.015, 0.03, "left", "bottom"),
+    }
+    x_pos, y_pos, ha, va = pos_map.get(loc, pos_map["lower right"])
+    ax.text(
+        x_pos,
+        y_pos,
+        _escape_mpl("\n".join(lines)),
+        transform=ax.transAxes,
+        ha=ha,
+        va=va,
+        multialignment="left",
+        fontsize=8.2,
+        color=COMPARE_INK,
+        linespacing=1.45,
+        zorder=10,
+        family="DejaVu Sans",
+        bbox=dict(
+            boxstyle="round,pad=0.55,rounding_size=0.5",
+            facecolor="#ffffff",
+            edgecolor="#cfcec8",
+            linewidth=0.9,
+            alpha=0.95,
+        ),
+    )
+
+
+def _key_lines(metrics: dict, bal: dict | None = None, flow: dict | None = None) -> list[str]:
+    """Formats concise corner-box summary metrics (D10/D50/D90, Relative Span, Recovery, Flow)."""
+    lines = [
+        f"D10  {metrics['D10_um']:.0f} µm",
+        f"D50  {metrics['D50_um']:.0f} µm",
+        f"D90  {metrics['D90_um']:.0f} µm",
+        f"Rel. span  {metrics['relative_span']:.2f}",
+    ]
+    if bal is not None:
+        lines.append(f"Recovery  {bal['recovery_pct']:.1f} %")
+    if flow:
+        if "carr" in flow:
+            lines.append(f"Carr  {flow['carr']:.1f} %  |  HR  {flow['hausner']:.2f}")
+        if "aor" in flow:
+            lines.append(f"AoR  {flow['aor']:.0f}°")
+    return lines
+
+
+def _single_with_box(plot_func, b: dict, loc: str):
+    """Renders an individual batch sieve plot using its assigned color and key-metrics corner box."""
+    fig = plot_func(b["df"], b["m"], plot_color=b["color"])
+    _corner_box(fig.axes[0], _key_lines(b["m"], b["bal"], b["flow"]), loc)
+    return fig
+
+
+def _combined_q3(batches: list[dict]):
+    """Plots cumulative undersize curves Q3 [%] for multiple batches with D50 median highlights."""
+    x_lo, x_hi = _compare_x_range(batches)
+    fig, ax = _compare_fig_axes(
+        "Cumulative size distribution Q₃ - batch comparison",
+        "Dots on the 50 % line mark each batch's D50",
+        "Sieve aperture x [µm] (log scale)",
+        "Cumulative undersize Q₃ [%]",
+        x_lo,
+        x_hi,
+        105.0,
+    )
+    # Source: Ph. Eur. 2.9.38 / ISO 9276-1 — 50% cumulative undersize median line (D50)
+    ax.axhline(50.0, color="#b9b8b2", linestyle=":", linewidth=1.0, zorder=1)
+    for i, b in enumerate(batches):
+        color = COMPARE_COLORS[i % len(COMPARE_COLORS)]
+        mk = COMPARE_MARKERS[i % len(COMPARE_MARKERS)]
+        d = b["df"][b["df"]["Mesh size [µm]"] > 0.0].sort_values("Mesh size [µm]")
+        x = list(d["Mesh size [µm]"]) + [b["m"]["x_max_um"]]
+        y = list(d["Q3 (undersize) [%]"]) + [100.0]
+        ax.plot(
+            x,
+            y,
+            color=color,
+            marker=mk,
+            markersize=5.5,
+            markeredgecolor="#ffffff",
+            markeredgewidth=1.0,
+            linewidth=2.2,
+            solid_capstyle="round",
+            zorder=3 + i,
+            label=_legend_label(b),
+        )
+        d50_val = float(b["m"]["D50_um"])
+        if math.isfinite(d50_val) and d50_val > 0.0:
+            ax.plot(
+                [d50_val],
+                [50.0],
+                marker="o",
+                markersize=9,
+                markerfacecolor=color,
+                markeredgecolor="#ffffff",
+                markeredgewidth=2.0,
+                zorder=20,
+                linestyle="none",
+            )
+    leg = ax.legend(
+        fontsize=8.5,
+        loc="upper left",
+        frameon=True,
+        facecolor="#ffffff",
+        edgecolor="#cfcec8",
+        framealpha=0.95,
+        borderpad=0.8,
+        labelspacing=0.55,
+        title="Batch",
+        title_fontsize=8.5,
+    )
+    leg._legend_box.align = "left"
+    if len(batches) == 1:
+        _corner_box(ax, _key_lines(batches[0]["m"], batches[0]["bal"], batches[0]["flow"]), "lower right")
+    return fig
+
+
+def _class_labels(b: dict) -> list[str]:
+    """Builds human-readable sieve class interval labels (ascending by lower aperture)."""
+    d = b["df"].sort_values("Mesh size [µm]")
+    lows = d["Mesh size [µm]"].to_numpy(dtype=float)
+    ups = lows + d["Class width dx [µm]"].to_numpy(dtype=float)
+    return [f"{lo:g}-{up:g}" if lo > 0.0 else f"<{up:g}" for lo, up in zip(lows, ups)]
+
+
+def _combined_density(batches: list[dict], style: str = "grouped"):
+    """
+    Plots multi-batch particle-size distribution comparison in two switchable styles:
+      - 'grouped': side-by-side bars of differential mass share dQ3 [%] per size class
+                   (requires identical sieve stacks across batches; falls back to 'panels').
+      - 'panels':  one shared-axis density histogram q3 [%/µm] panel per batch.
+    """
+    style = style if style in COMPARE_HIST_STYLES else "grouped"
+    same_classes = len({tuple(b["mesh"]) for b in batches}) == 1
+    if style == "grouped" and not same_classes:
+        style = "panels"
+
+    x_lo, x_hi = _compare_x_range(batches)
+    q3_max = max(float(b["df"]["q3 [%/µm]"].max()) for b in batches)
+    q3_top = q3_max * 1.25 if (math.isfinite(q3_max) and q3_max > 0.0) else 1.0
+
+    def _edges(b: dict):
+        d = b["df"].sort_values("Mesh size [µm]")
+        lows = d["Mesh size [µm]"].to_numpy(dtype=float)
+        ups = lows + d["Class width dx [µm]"].to_numpy(dtype=float)
+        return np.maximum(lows, x_lo), ups, d["q3 [%/µm]"].to_numpy(dtype=float)
+
+    if style == "grouped":
+        labels = _class_labels(batches[0])
+        n_classes = len(labels)
+        n_batches = len(batches)
+        width = 0.82 / max(n_batches, 1)
+        raw_top = max(float(b["df"]["dQ3 [%]"].max()) for b in batches) if "dQ3 [%]" in batches[0]["df"] else 0.0
+        top = raw_top * 1.2 if (math.isfinite(raw_top) and raw_top > 0.0) else 1.0
+        # Source: ISO 9276-1, Section 4.1 — differential mass fraction dQ3 [%] per size class
+        fig, ax = _compare_fig_axes(
+            "Mass share per size class - batch comparison",
+            "Bars side by side per sieve class (no overlap); share of the sample mass in each class",
+            "Size class [µm]",
+            "Mass share per class [%]",
+            0.0,
+            1.0,
+            top,
+            logx=False,
+        )
+        ax.grid(False, axis="x")
+        for i, b in enumerate(batches):
+            d = b["df"].sort_values("Mesh size [µm]")
+            pos = np.arange(n_classes) - 0.41 + width * (i + 0.5)
+            ax.bar(
+                pos,
+                d["dQ3 [%]"].to_numpy(dtype=float),
+                width=width * 0.92,
+                color=COMPARE_COLORS[i % len(COMPARE_COLORS)],
+                edgecolor="#ffffff",
+                linewidth=1.0,
+                label=_legend_label(b),
+                zorder=3,
+            )
+        ax.set_xticks(np.arange(n_classes))
+        ax.set_xticklabels(labels, rotation=30 if n_classes > 6 else 0, ha="right" if n_classes > 6 else "center")
+        ax.set_xlim(-0.6, n_classes - 0.4)
+        ax.legend(
+            fontsize=8.5,
+            loc="upper right",
+            frameon=True,
+            facecolor="#ffffff",
+            edgecolor="#cfcec8",
+            framealpha=0.95,
+            title="Batch",
+            title_fontsize=8.5,
+        )
+        return fig
+
+    # Source: ISO 9276-1, Eq. 5 — density distribution q3(x) = dQ3 / dx [%/µm] on shared log abscissa
+    n_batches = len(batches)
+    fig, axes = plt.subplots(n_batches, 1, figsize=(9.2, max(3.2, 1.9 * n_batches + 0.9)), sharex=True)
+    axes = np.atleast_1d(axes)
+    fig.patch.set_facecolor("#ffffff")
+    fig.suptitle(
+        "Density distribution q₃ - one panel per batch (same axes)",
+        x=0.012,
+        y=0.995,
+        ha="left",
+        fontsize=14,
+        fontweight="bold",
+        color=COMPARE_INK,
+    )
+    for i, (b, ax) in enumerate(zip(batches, axes)):
+        lows, ups, vals = _edges(b)
+        ax.set_xscale("log")
+        ax.set_xlim(x_lo, x_hi)
+        ax.set_ylim(0.0, q3_top)
+        ax.bar(
+            lows,
+            vals,
+            width=np.maximum(ups - lows, 0.0),
+            align="edge",
+            color=COMPARE_COLORS[i % len(COMPARE_COLORS)],
+            edgecolor="#ffffff",
+            linewidth=0.8,
+            zorder=3,
+        )
+        d50_val = float(b["m"]["D50_um"])
+        if math.isfinite(d50_val) and d50_val > 0.0:
+            ax.axvline(d50_val, color=COMPARE_INK_SOFT, linestyle="--", linewidth=1.0, zorder=4)
+        ax.text(
+            0.01,
+            0.9,
+            _escape_mpl(f"{b['name']}  |  D50 {b['m']['D50_um']:.0f} µm"),
+            transform=ax.transAxes,
+            fontsize=9,
+            fontweight="bold",
+            color=COMPARE_INK,
+            va="top",
+        )
+        _style_compare_axes(ax)
+    axes[-1].set_xlabel("Particle size x [µm] (log scale)", fontsize=10.5, color=COMPARE_INK_SOFT)
+    fig.supylabel("Density q₃ [%/µm]", fontsize=10.5, color=COMPARE_INK_SOFT)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.965))
+    return fig
+
+
+def _flow_chart(batches: list[dict]):
+    """
+    Plots multi-batch Carr's Index, Hausner Ratio, and Angle of Repose comparison bars
+    with shaded Ph. Eur. 2.9.36 'Good or better' reference zones.
+    """
+    specs = [sp for sp in COMPARE_FLOW_SPECS if any(sp[0] in b["flow"] for b in batches)]
+    if not specs:
+        raise ValueError("No flowability metrics available to plot.")
+
+    fig, axes = plt.subplots(1, len(specs), figsize=(4.2 * len(specs) + 1.0, 0.55 * len(batches) + 2.6))
+    axes = np.atleast_1d(axes)
+    fig.patch.set_facecolor("#ffffff")
+    fig.suptitle(
+        "Flowability comparison (Ph. Eur. 2.9.36)",
+        x=0.012,
+        y=0.985,
+        ha="left",
+        fontsize=14,
+        fontweight="bold",
+        color=COMPARE_INK,
+    )
+    names = [_escape_mpl(b["name"]) for b in batches]
+    ypos = np.arange(len(batches))[::-1]
+    for ax, (key, title, unit, good_limit) in zip(axes, specs):
+        vals = [b["flow"].get(key) for b in batches]
+        finite_vals = [float(v) for v in vals if v is not None and math.isfinite(float(v))]
+        # Source: Ph. Eur. 2.9.36 — Hausner Ratio physical lower bound is 1.0; CI and AoR start at 0.0
+        lo = 1.0 if key == "hausner" else 0.0
+        raw_top = max(finite_vals + [good_limit]) * 1.25
+        top = raw_top if (math.isfinite(raw_top) and raw_top > lo) else (lo + 1.0)
+        ax.set_xlim(lo, top)
+        # Source: Ph. Eur. 2.9.36 Tables 2.9.36.-1 & 2.9.36.-2 — Good-or-better shaded zone
+        ax.axvspan(lo, good_limit, color="#1baf7a", alpha=0.10, zorder=1, linewidth=0)
+        ax.set_ylim(-0.6, len(batches) - 0.4)
+        ax.text(
+            lo + (top - lo) * 0.01,
+            0.985,
+            "shaded = good flow or better",
+            transform=ax.get_xaxis_transform(),
+            fontsize=7.2,
+            color=COMPARE_INK_SOFT,
+            ha="left",
+            va="top",
+            zorder=5,
+        )
+        for i, (y_pos, val) in enumerate(zip(ypos, vals)):
+            if val is None or not math.isfinite(float(val)):
+                ax.text(lo + (top - lo) * 0.02, y_pos, "n/a", va="center", fontsize=8.5, color=COMPARE_INK_SOFT)
+                continue
+            fval = float(val)
+            ax.barh(
+                y_pos,
+                max(fval - lo, 0.0),
+                left=lo,
+                height=0.62,
+                color=COMPARE_COLORS[i % len(COMPARE_COLORS)],
+                edgecolor="#ffffff",
+                zorder=3,
+            )
+            ax.text(fval + (top - lo) * 0.015, y_pos, f"{fval:.2f}{unit}", va="center", fontsize=8.5, color=COMPARE_INK)
+        ax.set_yticks(ypos)
+        ax.set_yticklabels(names if ax is axes[0] else [], fontsize=9, color=COMPARE_INK)
+        ax.set_title(f"{title} [{unit}]" if unit else title, loc="left", fontsize=10, color=COMPARE_INK_SOFT, pad=8)
+        _style_compare_axes(ax)
+        ax.grid(False, axis="y")
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
+    return fig
+
+
+# =============================================================================
 # MODULE D: SELF-CONTAINED EMBEDDED WEB UI & LOCAL OFFLINE HTTP SERVER
-# Serves an offline laboratory web dashboard over 127.0.0.1 with zero external
-# files, zero external URLs/CDNs, and strict anti-crash input validation.
+# Serves an offline laboratory web dashboard over 127.0.0.1 with dynamic
+# relative media/ experiment guides and strict anti-crash input validation.
 # =============================================================================
 
 # =============================================================================
-# EMBEDDED WEB ASSETS (100% OFFLINE — ZERO EXTERNAL FILES OR CDNs)
+# EMBEDDED WEB ASSETS (100% OFFLINE — ZERO EXTERNAL URLs OR CDNs)
 # =============================================================================
 
 HTML_INDEX: str = """<!DOCTYPE html>
@@ -1765,6 +2573,9 @@ HTML_INDEX: str = """<!DOCTYPE html>
       </button>
       <button type="button" class="tab-btn" role="tab" id="tab-btn-batch" aria-selected="false" aria-controls="panel-batch" data-tab="batch">
         Batch Flowability CSV
+      </button>
+      <button type="button" class="tab-btn" role="tab" id="tab-btn-compare" aria-selected="false" aria-controls="panel-compare" data-tab="compare">
+        Sieve Comparison
       </button>
     </nav>
 
@@ -1828,6 +2639,43 @@ HTML_INDEX: str = """<!DOCTYPE html>
         </div>
       </div>
 
+      <div class="card">
+        <h3>Report Options <span class="opt-tag">optional</span></h3>
+        <div class="form-grid form-grid-2">
+          <div class="form-field">
+            <label for="sieve-initial">Initial Sample Mass [g]</label>
+            <input type="text" id="sieve-initial" inputmode="decimal" placeholder="e.g. 100.0">
+            <span class="field-hint">Enables powder retained vs. lost balance and Ph. Eur. 2.9.38 (&le; 5% loss) check.</span>
+          </div>
+        </div>
+        <details class="opt-details">
+          <summary>Formulation details (only added to exports if filled in)</summary>
+          <div class="form-grid form-grid-3" style="margin-top:10px">
+            <div class="form-field">
+              <label for="sieve-f-name">Formulation</label>
+              <input type="text" id="sieve-f-name">
+            </div>
+            <div class="form-field">
+              <label for="sieve-f-batch">Batch ID</label>
+              <input type="text" id="sieve-f-batch">
+            </div>
+            <div class="form-field">
+              <label for="sieve-f-binder">Binder / excipients</label>
+              <input type="text" id="sieve-f-binder">
+            </div>
+            <div class="form-field">
+              <label for="sieve-f-ls">L/S ratio</label>
+              <input type="text" id="sieve-f-ls">
+            </div>
+            <div class="form-field">
+              <label for="sieve-f-notes">Notes</label>
+              <input type="text" id="sieve-f-notes">
+            </div>
+          </div>
+        </details>
+        <div id="sieve-limits-slot"></div>
+      </div>
+
       <div id="results-sieve" class="results-block hidden">
         <div id="sieve-interp-note" class="alert alert-info hidden" role="status"></div>
 
@@ -1868,6 +2716,8 @@ HTML_INDEX: str = """<!DOCTYPE html>
             <img id="sieve-chart-density" class="chart-img" alt="Density particle size distribution q3 histogram">
           </div>
         </div>
+
+        <div id="sieve-extras" class="hidden"></div>
 
         <div class="card">
           <h3 id="sieve-summary-title">Sieve Analysis Summary Table</h3>
@@ -2213,6 +3063,74 @@ HTML_INDEX: str = """<!DOCTYPE html>
           <p class="media-empty">Loading media gallery&hellip;</p>
         </div>
       </details>
+    </section>
+
+    <!-- =================================================================== -->
+    <!-- TAB 6: MULTI-BATCH SIEVE COMPARISON                                 -->
+    <!-- =================================================================== -->
+    <section id="panel-compare" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-compare">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2>Multi-Batch Sieve Comparison</h2>
+            <p class="card-desc">Upload several sieve CSV files (columns <code>mesh_um, empty_g, full_g</code>; optional: <code>initial_mass_g</code>; flowability <code>powder_mass_g, v0_ml, vf_ml</code> (Carr/Hausner) and <code>aor_height_mm, aor_diameter_mm</code> (angle of repose); formulation columns such as <code>formulation</code>, <code>binder</code>) to compare batches in one graph or individually.</p>
+          </div>
+        </div>
+        <div id="error-compare" class="alert alert-error hidden" role="alert"></div>
+        <div id="status-compare" class="alert alert-info hidden" role="status"></div>
+        <div class="toolbar">
+          <label class="btn btn-secondary file-label">
+            Upload Sieve CSV Files
+            <input type="file" id="cmp-file-input" accept=".csv,text/csv" multiple hidden>
+          </label>
+          <button type="button" id="btn-cmp-demo" class="btn btn-secondary">Load PD01 + Reference Samples</button>
+          <button type="button" id="btn-cmp-clear" class="btn btn-accent-outline">Clear List</button>
+        </div>
+        <ul id="cmp-file-list" class="cmp-list"></ul>
+        <div class="form-grid form-grid-2">
+          <div class="form-field">
+            <label for="cmp-xmax">Upper Size Limit x<sub>max</sub> [&micro;m]</label>
+            <input type="text" id="cmp-xmax" inputmode="decimal" value="2000">
+          </div>
+          <div class="form-field">
+            <label for="cmp-interp">Quantile Interpolation Mode</label>
+            <select id="cmp-interp">
+              <option value="linear" selected>Linear (Ph. Eur. 2.9.38)</option>
+              <option value="log">Logarithmic (ISO 9276-1)</option>
+            </select>
+          </div>
+        </div>
+        <div id="cmp-limits-slot"></div>
+        <div class="action-bar">
+          <button type="button" id="btn-cmp-run" class="btn btn-primary">Compare / Plot Batches</button>
+        </div>
+      </div>
+
+      <div id="results-compare" class="results-block hidden">
+        <div class="download-bar">
+          <div class="seg-toggle" role="group" aria-label="Plot display mode">
+            <button type="button" id="cmp-mode-combined" class="active">All batches in one graph</button>
+            <button type="button" id="cmp-mode-individual">Show individually</button>
+          </div>
+          <div class="seg-toggle" id="cmp-hist-toggle" role="group" aria-label="Histogram type">
+            <button type="button" id="cmp-hist-grouped" class="active">Histogram: grouped bars</button>
+            <button type="button" id="cmp-hist-panels">Histogram: one panel per batch</button>
+          </div>
+          <button type="button" id="btn-cmp-zip" class="btn btn-download">&#11015; Download All Graphs (ZIP)</button>
+          <span class="field-hint">Every graph is also downloadable on its own below. Files are compared automatically after upload.</span>
+        </div>
+        <div id="cmp-combined" class="charts-grid"></div>
+        <div id="cmp-individual" class="hidden"></div>
+        <div class="card">
+          <h3>Batch Comparison Table</h3>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead id="cmp-table-head"></thead>
+              <tbody id="cmp-table-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </section>
   </main>
 
@@ -2967,6 +3885,169 @@ body {
   font-size: 0.88rem;
   color: var(--text-muted, #526066);
 }
+
+/* ---- Multi-batch comparison, downloads, powder balance, acceptance limits ---- */
+.btn-download {
+  background: linear-gradient(180deg, #27a867, #168a4d);
+  color: #ffffff;
+  border: 1px solid #0f6e3c;
+  border-radius: 9px;
+  padding: 12px 24px;
+  font-size: 1rem;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(22, 138, 77, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  animation: dlPulse 1.8s ease-out 3;
+}
+.btn-download:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+@keyframes dlPulse {
+  0% { box-shadow: 0 0 0 0 rgba(39, 168, 103, 0.65); }
+  100% { box-shadow: 0 0 0 16px rgba(39, 168, 103, 0); }
+}
+.download-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 0 0 20px;
+  padding: 14px 18px;
+  background: #e8f6ee;
+  border: 2px solid #27a867;
+  border-radius: 10px;
+}
+.bal-bar {
+  display: flex;
+  height: 30px;
+  border-radius: 7px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  margin-bottom: 12px;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.bal-ok,
+.bal-lost {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.bal-ok { background: #2c6e5d; }
+.bal-lost { background: #c0392b; }
+.cmp-list {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.cmp-list li {
+  background: var(--primary-soft);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 4px 6px 4px 12px;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+.cmp-list button {
+  border: none;
+  background: transparent;
+  color: var(--danger);
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0 6px;
+}
+.seg-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+.seg-toggle button {
+  border: none;
+  background: var(--surface-alt);
+  padding: 10px 16px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  color: var(--text);
+}
+.seg-toggle button.active {
+  background: var(--primary);
+  color: #ffffff;
+}
+.opt-details { margin: 10px 0 0; }
+.opt-details summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--accent);
+}
+.opt-tag {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--neutral-bg);
+  border-radius: 999px;
+  padding: 2px 8px;
+  margin-left: 6px;
+}
+.lim-grid {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0;
+  max-width: 520px;
+}
+.lim-row {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.86rem;
+}
+.lim-row input {
+  padding: 6px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  font-family: inherit;
+}
+.meta-pre {
+  margin: 0;
+  padding: 12px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+.chart-actions { margin-top: 10px; }
+.batch-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 26px 0 12px;
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+.batch-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  display: inline-block;
+}
+.batch-extra {
+  margin: -4px 0 12px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
 """
 
 JS_APP: str = """(function () {
@@ -3194,6 +4275,28 @@ JS_APP: str = """(function () {
         const text = String(e.target.result || "");
         const data = await postJson("/api/read_sieve_csv", { text: text });
         setSieveTableRows(data.rows);
+
+        const initEl = $("sieve-initial");
+        if (initEl) {
+          initEl.value = (data.initial_mass != null && String(data.initial_mass).trim() !== "")
+            ? String(data.initial_mass)
+            : "";
+        }
+        const formMeta = data.formulation || {};
+        const setField = function (id, val) {
+          const el = $(id);
+          if (el && val != null && String(val).trim() !== "") {
+            el.value = String(val).trim();
+          }
+        };
+        setField("sieve-f-name", formMeta.formulation || formMeta.Formulation);
+        setField("sieve-f-batch", formMeta.batch || formMeta.batch_id || formMeta["Batch ID"]);
+        setField("sieve-f-binder", formMeta.binder || formMeta["Binder / excipients"]);
+        setField("sieve-f-ls", formMeta.ls_ratio || formMeta["L/S ratio"]);
+        setField("sieve-f-notes", formMeta.notes || formMeta.Notes);
+
+        // Auto-calculate immediately after valid CSV upload
+        await calculateSieve();
       } catch (err) {
         showError("sieve", err.message || "Could not parse sieve CSV file.");
       }
@@ -3248,7 +4351,12 @@ JS_APP: str = """(function () {
       );
 
       $("results-sieve").classList.remove("hidden");
+      await loadSieveReport();
     } catch (err) {
+      const extrasEl = $("sieve-extras");
+      if (extrasEl) {
+        extrasEl.classList.add("hidden");
+      }
       showError("sieve", err.message || "Sieve calculation failed.");
     } finally {
       btn.disabled = false;
@@ -3574,12 +4682,412 @@ JS_APP: str = """(function () {
   }
 
   /* -----------------------------------------------------------------------
+   * SIEVE REPORT EXTRAS (POWDER BALANCE, LIMITS, METADATA & ZIP EXPORT)
+   * AND TAB 6: MULTI-BATCH SIEVE COMPARISON
+   * --------------------------------------------------------------------- */
+  const LIMIT_DEFS_SIEVE = [
+    ["d10", "D10 [µm]"],
+    ["d50", "D50 [µm]"],
+    ["d90", "D90 [µm]"],
+    ["relative_span", "Relative span [-]"],
+    ["recovery_pct", "Recovery [%]"]
+  ];
+  const LIMIT_DEFS_COMPARE = LIMIT_DEFS_SIEVE.concat([
+    ["carr", "Carr index [%]"],
+    ["hausner", "Hausner ratio [-]"],
+    ["aor", "Angle of repose [°]"]
+  ]);
+  const FORMULATION_FIELDS = [
+    ["sieve-f-name", "Formulation"],
+    ["sieve-f-batch", "Batch ID"],
+    ["sieve-f-binder", "Binder / excipients"],
+    ["sieve-f-ls", "L/S ratio"],
+    ["sieve-f-notes", "Notes"]
+  ];
+
+  function saveBase64File(b64, filename, mimeType) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) {
+      bytes[i] = bin.charCodeAt(i);
+    }
+    const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+  }
+
+  function buildLimitsHtml(prefix, defs) {
+    const rows = defs.map(function (f) {
+      return (
+        '<div class="lim-row"><span>' + escapeHtml(f[1]) + "</span>" +
+        '<input type="text" inputmode="decimal" id="' + prefix + "-lim-" + f[0] + '-min" placeholder="min">' +
+        '<input type="text" inputmode="decimal" id="' + prefix + "-lim-" + f[0] + '-max" placeholder="max"></div>'
+      );
+    }).join("");
+    return (
+      '<details class="opt-details"><summary>Acceptance limits (optional)</summary><div class="lim-grid">' +
+      rows +
+      '</div><span class="field-hint">Leave a field empty to skip that limit. Results are marked &ldquo;Within limits&rdquo; or &ldquo;Outside limits&rdquo;.</span></details>'
+    );
+  }
+
+  function collectLimitInputs(prefix, defs) {
+    const out = {};
+    defs.forEach(function (f) {
+      const minEl = $(prefix + "-lim-" + f[0] + "-min");
+      const maxEl = $(prefix + "-lim-" + f[0] + "-max");
+      out[f[0]] = {
+        min: minEl ? minEl.value.trim() : "",
+        max: maxEl ? maxEl.value.trim() : ""
+      };
+    });
+    return out;
+  }
+
+  function renderLimitStatusTable(headEl, bodyEl, header, rows) {
+    if (!headEl || !bodyEl) return;
+    headEl.innerHTML = "<tr>" + header.map(function (h) {
+      return "<th>" + escapeHtml(h) + "</th>";
+    }).join("") + "</tr>";
+    bodyEl.innerHTML = rows.map(function (r) {
+      return "<tr>" + r.map(function (c) {
+        const s = String(c == null ? "" : c);
+        if (s === "Within limits") {
+          return '<td><span class="badge badge-good">' + escapeHtml(s) + "</span></td>";
+        }
+        if (s.indexOf("Outside limits") === 0) {
+          return '<td><span class="badge badge-poor">' + escapeHtml(s) + "</span></td>";
+        }
+        return "<td>" + escapeHtml(s) + "</td>";
+      }).join("") + "</tr>";
+    }).join("");
+  }
+
+  function initSieveReportOptions() {
+    const slot = $("sieve-limits-slot");
+    if (slot) {
+      slot.innerHTML = buildLimitsHtml("sieve", LIMIT_DEFS_SIEVE);
+    }
+  }
+
+  async function loadSieveReport() {
+    const extras = $("sieve-extras");
+    if (!extras) return;
+    try {
+      const form = {};
+      FORMULATION_FIELDS.forEach(function (f) {
+        const el = $(f[0]);
+        form[f[1]] = el ? el.value.trim() : "";
+      });
+      const initEl = $("sieve-initial");
+      const data = await postJson("/api/sieve_report", {
+        rows: collectSieveRows(),
+        x_max_um: $("sieve-xmax").value.trim(),
+        interp_mode: $("sieve-interp").value,
+        initial_mass: initEl ? initEl.value.trim() : "",
+        limits: collectLimitInputs("sieve", LIMIT_DEFS_SIEVE),
+        formulation: form
+      });
+      renderSieveExtras(data);
+    } catch (err) {
+      extras.innerHTML = '<div class="alert alert-error">' + escapeHtml(err.message || "Report could not be created.") + "</div>";
+      extras.classList.remove("hidden");
+    }
+  }
+
+  function renderSieveExtras(data) {
+    const b = data.balance || {};
+    let html = "";
+    html +=
+      '<div class="download-bar">' +
+      '<button type="button" class="btn btn-download" id="btn-sieve-zip">&#11015; Download Plots + Metadata (ZIP)</button>' +
+      '<span class="field-hint">Both plots as PNG with a metadata footer, plus metadata.txt.</span></div>';
+
+    html += '<div class="card"><h3>Powder Retained vs. Lost</h3>';
+    if (b.initial != null) {
+      const rec = Math.max(0, Math.min(100, b.recovery_pct));
+      const lostPct = 100 - rec;
+      html +=
+        '<div class="bal-bar">' +
+        '<span class="bal-ok" style="width:' + rec + '%">Retained ' + b.recovery_pct.toFixed(1) + " %</span>" +
+        (lostPct > 0 ? '<span class="bal-lost" style="width:' + lostPct + '%">Lost ' + lostPct.toFixed(1) + " %</span>" : "") +
+        "</div>" +
+        '<div class="table-scroll"><table class="data-table"><thead><tr>' +
+        "<th>Initial mass [g]</th><th>Retained [g]</th><th>Lost [g]</th><th>Recovery [%]</th><th>Ph. Eur. 2.9.38 Loss Check (&le; 5%)</th>" +
+        "</tr></thead><tbody><tr>" +
+        "<td>" + b.initial.toFixed(2) + "</td>" +
+        "<td>" + b.retained.toFixed(2) + "</td>" +
+        "<td>" + b.lost.toFixed(2) + "</td>" +
+        "<td>" + b.recovery_pct.toFixed(1) + "</td>" +
+        "<td>" + (b.exceeds_loss_limit
+          ? '<span class="badge badge-poor">Exceeds 5% loss limit</span>'
+          : (b.lost < 0
+            ? '<span class="badge badge-warn">Check weights (retained &gt; initial)</span>'
+            : '<span class="badge badge-good">Within 5% limit</span>')) +
+        "</td></tr></tbody></table></div>";
+      if (b.lost < 0) {
+        html += '<p class="field-hint">Retained mass exceeds the initial mass &mdash; please check the weights.</p>';
+      } else if (b.exceeds_loss_limit) {
+        html += '<p class="field-hint">Warning: Powder loss (' + b.loss_pct.toFixed(1) + '%) exceeds the 5% analytical sieving limit specified in Ph. Eur. 2.9.38.</p>';
+      }
+    } else {
+      html += '<p class="card-desc">Retained powder: <strong>' + Number(b.retained || 0).toFixed(2) + ' g</strong>. Enter the initial sample mass under &ldquo;Report Options&rdquo; and calculate again to see how much powder was lost.</p>';
+    }
+    html += "</div>";
+
+    if (data.limit_rows && data.limit_rows.length) {
+      const badgeCls = data.overall === "Within limits"
+        ? "badge-good"
+        : (data.overall === "Outside limits" ? "badge-poor" : "badge-neutral");
+      html +=
+        '<div class="card"><h3>Limit Check <span class="badge ' + badgeCls + '">' + escapeHtml(data.overall) + "</span></h3>" +
+        '<div class="table-scroll"><table class="data-table"><thead id="sieve-lim-head"></thead><tbody id="sieve-lim-body"></tbody></table></div></div>';
+    }
+
+    html += '<div class="card"><h3>Plot Metadata</h3><pre class="meta-pre">' + escapeHtml((data.meta_lines || []).join("\\n")) + "</pre></div>";
+
+    const extras = $("sieve-extras");
+    extras.innerHTML = html;
+    extras.classList.remove("hidden");
+
+    if (data.limit_rows && data.limit_rows.length) {
+      renderLimitStatusTable($("sieve-lim-head"), $("sieve-lim-body"), data.limit_header || [], data.limit_rows);
+    }
+    const zipBtn = $("btn-sieve-zip");
+    if (zipBtn) {
+      zipBtn.addEventListener("click", function () {
+        saveBase64File(data.zip, data.zip_name, "application/zip");
+      });
+    }
+  }
+
+  let cmpFiles = [];
+  const cmpStore = { combined: [], individual: [], detail: [] };
+  let cmpZipData = null;
+  let cmpHistMode = "grouped";
+
+  function setCompareStatus(msg) {
+    const el = $("status-compare");
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.toggle("hidden", !msg);
+  }
+
+  function renderCompareFileList() {
+    const listEl = $("cmp-file-list");
+    if (!listEl) return;
+    listEl.innerHTML = cmpFiles.map(function (f, i) {
+      return "<li>" + escapeHtml(f.name) + '<button type="button" data-rm="' + i + '" title="Remove">&times;</button></li>';
+    }).join("");
+  }
+
+  function readUploadedCsvFiles(fileList) {
+    return Promise.all(Array.prototype.slice.call(fileList).map(function (f) {
+      return new Promise(function (resolve, reject) {
+        const reader = new FileReader();
+        reader.onload = function (ev) {
+          resolve({ name: f.name, text: String(ev.target.result || "") });
+        };
+        reader.onerror = function () {
+          reject(new Error("Could not read " + f.name));
+        };
+        reader.readAsText(f);
+      });
+    }));
+  }
+
+  function renderCompareChartCard(chart, groupKey, idx) {
+    return (
+      '<div class="card chart-card"><h3>' + escapeHtml(chart.title) + "</h3>" +
+      '<img class="chart-img" alt="' + escapeHtml(chart.title) + '" src="data:image/png;base64,' + chart.png + '">' +
+      '<div class="chart-actions"><button type="button" class="btn btn-secondary btn-dl" data-grp="' + groupKey + '" data-idx="' + idx + '">&#11015; Download PNG</button></div></div>'
+    );
+  }
+
+  function renderCompareCombined() {
+    let html = "";
+    cmpStore.combined.forEach(function (chart, idx) {
+      if (chart.variant && chart.variant !== cmpHistMode) {
+        return;
+      }
+      html += renderCompareChartCard(chart, "combined", idx);
+    });
+    $("cmp-combined").innerHTML = html;
+  }
+
+  function setCompareHistMode(mode) {
+    cmpHistMode = mode;
+    $("cmp-hist-grouped").classList.toggle("active", mode === "grouped");
+    $("cmp-hist-panels").classList.toggle("active", mode === "panels");
+    renderCompareCombined();
+  }
+
+  function renderCompareIndividual() {
+    $("cmp-individual").innerHTML = cmpStore.detail.map(function (d) {
+      const kpis = d.kpis.map(function (k) {
+        return '<div class="kpi-card' + (k[2] ? " kpi-highlight" : "") + '"><span class="kpi-label">' + escapeHtml(k[0]) + '</span><span class="kpi-value">' + escapeHtml(k[1]) + "</span></div>";
+      }).join("");
+      const charts = d.charts.map(function (ci) {
+        return renderCompareChartCard(cmpStore.individual[ci], "individual", ci);
+      }).join("");
+      const head = "<tr>" + d.table_header.map(function (h) { return "<th>" + escapeHtml(h) + "</th>"; }).join("") + "</tr>";
+      const body = d.table_rows.map(function (r) {
+        return "<tr>" + r.map(function (c) { return "<td>" + escapeHtml(c) + "</td>"; }).join("") + "</tr>";
+      }).join("");
+      return (
+        '<div class="batch-head"><span class="batch-swatch" style="background:' + escapeHtml(d.color) + '"></span>' + escapeHtml(d.name) + "</div>" +
+        (d.extra.length ? '<div class="batch-extra">' + escapeHtml(d.extra.join("  |  ")) + "</div>" : "") +
+        (d.note ? '<div class="alert alert-info">' + escapeHtml(d.note) + "</div>" : "") +
+        '<div class="kpi-grid kpi-grid-6">' + kpis + "</div>" +
+        '<div class="charts-grid">' + charts + "</div>" +
+        '<div class="card"><h3>Sieve Analysis Summary Table</h3><div class="table-scroll"><table class="data-table"><thead>' + head + "</thead><tbody>" + body + "</tbody></table></div></div>"
+      );
+    }).join("");
+  }
+
+  function setCompareDisplayMode(mode) {
+    const isCombined = mode === "combined";
+    $("cmp-combined").classList.toggle("hidden", !isCombined);
+    $("cmp-individual").classList.toggle("hidden", isCombined);
+    $("cmp-mode-combined").classList.toggle("active", isCombined);
+    $("cmp-mode-individual").classList.toggle("active", !isCombined);
+    const histToggle = $("cmp-hist-toggle");
+    if (histToggle) {
+      histToggle.classList.toggle("hidden", !isCombined);
+    }
+  }
+
+  async function runCompareBatches() {
+    clearError("compare");
+    if (cmpFiles.length < 1) {
+      showError("compare", "Add at least 1 sieve CSV file.");
+      return;
+    }
+    const btn = $("btn-cmp-run");
+    btn.disabled = true;
+    try {
+      const data = await postJson("/api/compare", {
+        files: cmpFiles,
+        x_max_um: $("cmp-xmax").value.trim(),
+        interp_mode: $("cmp-interp").value,
+        limits: collectLimitInputs("cmp", LIMIT_DEFS_COMPARE)
+      });
+      cmpStore.combined = data.combined || [];
+      cmpStore.individual = data.individual || [];
+      cmpStore.detail = data.detail || [];
+      cmpZipData = { b64: data.zip, name: data.zip_name };
+
+      const hasGrouped = cmpStore.combined.some(function (c) { return c.variant === "grouped"; });
+      $("cmp-hist-grouped").classList.toggle("hidden", !hasGrouped);
+      if (!hasGrouped) {
+        cmpHistMode = "panels";
+      } else if (cmpHistMode !== "panels") {
+        cmpHistMode = "grouped";
+      }
+      setCompareHistMode(cmpHistMode);
+      renderCompareIndividual();
+      renderLimitStatusTable($("cmp-table-head"), $("cmp-table-body"), data.table_header || [], data.table_rows || []);
+      $("results-compare").classList.remove("hidden");
+      setCompareDisplayMode("combined");
+    } catch (err) {
+      showError("compare", err.message || "Comparison failed.");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function initCompareTab() {
+    if (!$("panel-compare")) return;
+    const limSlot = $("cmp-limits-slot");
+    if (limSlot) {
+      limSlot.innerHTML = buildLimitsHtml("cmp", LIMIT_DEFS_COMPARE);
+    }
+
+    $("cmp-file-input").addEventListener("change", async function (e) {
+      const selected = e.target.files;
+      if (!selected || selected.length === 0) return;
+      clearError("compare");
+      try {
+        const added = await readUploadedCsvFiles(selected);
+        cmpFiles = cmpFiles.concat(added).slice(0, 10);
+        renderCompareFileList();
+        e.target.value = "";
+        setCompareStatus(added.length + " file(s) loaded - comparing ...");
+        await runCompareBatches();
+        setCompareStatus("");
+      } catch (err) {
+        setCompareStatus("");
+        showError("compare", err.message || "Could not read selected CSV files.");
+      }
+      e.target.value = "";
+    });
+
+    $("cmp-file-list").addEventListener("click", function (e) {
+      const idx = e.target.getAttribute("data-rm");
+      if (idx !== null) {
+        cmpFiles.splice(Number(idx), 1);
+        renderCompareFileList();
+      }
+    });
+
+    $("btn-cmp-clear").addEventListener("click", function () {
+      cmpFiles = [];
+      renderCompareFileList();
+      clearError("compare");
+      setCompareStatus("");
+      $("results-compare").classList.add("hidden");
+    });
+
+    $("btn-cmp-demo").addEventListener("click", async function () {
+      clearError("compare");
+      try {
+        const a = await postJson("/api/sample", { sample: "sieve_pd01" });
+        const b = await postJson("/api/sample", { sample: "sieve_reference" });
+        cmpFiles = [
+          { name: "PD01_sample.csv", text: a.csv_text },
+          { name: "Reference_sample.csv", text: b.csv_text }
+        ];
+        renderCompareFileList();
+        await runCompareBatches();
+      } catch (err) {
+        showError("compare", err.message || "Could not load sample files.");
+      }
+    });
+
+    $("btn-cmp-run").addEventListener("click", runCompareBatches);
+    $("cmp-hist-grouped").addEventListener("click", function () { setCompareHistMode("grouped"); });
+    $("cmp-hist-panels").addEventListener("click", function () { setCompareHistMode("panels"); });
+    $("cmp-mode-combined").addEventListener("click", function () { setCompareDisplayMode("combined"); });
+    $("cmp-mode-individual").addEventListener("click", function () { setCompareDisplayMode("individual"); });
+    $("btn-cmp-zip").addEventListener("click", function () {
+      if (cmpZipData) {
+        saveBase64File(cmpZipData.b64, cmpZipData.name, "application/zip");
+      }
+    });
+    $("results-compare").addEventListener("click", function (e) {
+      const btn = e.target.closest(".btn-dl");
+      if (!btn) return;
+      const group = cmpStore[btn.getAttribute("data-grp")];
+      const chart = group ? group[Number(btn.getAttribute("data-idx"))] : null;
+      if (chart) {
+        saveBase64File(chart.png, chart.filename, "image/png");
+      }
+    });
+  }
+
+  /* -----------------------------------------------------------------------
    * BOOTSTRAP
    * --------------------------------------------------------------------- */
   document.addEventListener("DOMContentLoaded", function () {
     initTabs();
 
-    // Tab 1: Sieve Analysis
+    // Tab 1: Sieve Analysis + Report Options
+    initSieveReportOptions();
     $("sieve-csv-input").addEventListener("change", handleSieveCsvUpload);
     $("btn-load-pd01").addEventListener("click", function () { loadSieveSample("sieve_pd01"); });
     $("btn-load-ref").addEventListener("click", function () { loadSieveSample("sieve_reference"); });
@@ -3605,6 +5113,9 @@ JS_APP: str = """(function () {
     $("batch-csv-input").addEventListener("change", handleBatchCsvUpload);
     $("btn-load-course-csv").addEventListener("click", loadCourseBatchDataset);
     $("btn-analyze-batch").addEventListener("click", analyzeBatchCsv);
+
+    // Tab 6: Multi-Batch Sieve Comparison
+    initCompareTab();
 
     // Quit button
     $("btn-quit").addEventListener("click", quitServer);
@@ -3812,15 +5323,22 @@ def run_sieve(inputs: dict) -> dict:
 def run_read_sieve_csv(inputs: dict) -> dict:
     """
     API adapter for `/api/read_sieve_csv`.
-    Parses uploaded sieve CSV text via `load_sieve_csv` and returns table rows.
+    Parses uploaded sieve CSV text via `load_sieve_csv` and returns table rows
+    plus any optional first-row initial_mass_g and formulation metadata.
     """
     text = _require_key(inputs, ("text", "csv_text"), "text")
     if not isinstance(text, str) or not text.strip():
         raise ValueError("Uploaded CSV text must be a non-empty string.")
 
     mesh, empty, full = load_sieve_csv(text)
+    details, initial_mass = _optional_columns(text)
     rows = [[_format_input_float(m), _format_input_float(e), _format_input_float(f)] for m, e, f in zip(mesh, empty, full)]
-    return {"ok": True, "rows": rows}
+    return {
+        "ok": True,
+        "rows": rows,
+        "initial_mass": None if initial_mass is None else _format_input_float(initial_mass),
+        "formulation": details,
+    }
 
 
 def run_load_sample(inputs: dict) -> dict:
@@ -4073,15 +5591,292 @@ def run_flowability_batch(inputs: dict) -> dict:
     }
 
 
-# Route dispatch table mapping all 7 calculation & data API endpoints
+def run_sieve_report(inputs: dict) -> dict:
+    """
+    API adapter for `/api/sieve_report`.
+    Computes retained vs. lost powder balance (with Ph. Eur. 2.9.38 <= 5% mass-loss
+    check), optional acceptance limit evaluations, metadata footer lines, and an
+    offline downloadable ZIP bundle containing annotated PNG plots + metadata.txt.
+    """
+    mesh, empty, full = _rows_to_lists(inputs.get("rows"))
+    x_max, mode = _xmax_and_mode(inputs)
+    df, m = analyze_sieve_data(mesh, empty, full, x_max_um=x_max, interpolation_mode=mode)
+
+    details = _clean_details(inputs.get("formulation"))
+    bal = _compute_powder_balance(m["total_mass_g"], _opt_float(inputs.get("initial_mass"), "Initial sample mass [g]"))
+    limit_rows, overall, _failed = _check_limits(_collect_limit_values(m, bal), _parse_limits(inputs.get("limits")))
+    name = details.get("Formulation") or "Sieve table input"
+    lines = _meta_lines(name, mesh, empty, full, m, bal, details)
+
+    files: dict[str, bytes] = {}
+    try:
+        for fname, plot_func, title, loc in (
+            ("cumulative_Q3.png", plot_q3_cumulative, "Cumulative undersize Q3", "lower right"),
+            ("density_q3.png", plot_q3_density, "Density distribution q3", "mid right"),
+        ):
+            fig = plot_func(df, m)
+            _corner_box(fig.axes[0], _key_lines(m, bal), loc)
+            files[fname] = _png_with_metadata(fig, lines, title)
+    finally:
+        plt.close("all")
+    files["metadata.txt"] = ("\n".join(lines) + "\n").encode("utf-8")
+
+    return {
+        "ok": True,
+        "balance": {
+            "retained": m["total_mass_g"],
+            "initial": None if bal is None else bal["initial"],
+            "lost": None if bal is None else bal["lost"],
+            "recovery_pct": None if bal is None else bal["recovery_pct"],
+            "loss_pct": None if bal is None else bal["loss_pct"],
+            "exceeds_loss_limit": False if bal is None else bool(bal["exceeds_loss_limit"]),
+        },
+        "limit_header": ["Parameter", "Value", "Limit", "Status"],
+        "limit_rows": limit_rows,
+        "overall": overall or "",
+        "meta_lines": lines,
+        "zip": _zip_b64(files),
+        "zip_name": f"sieve_plots_{datetime.now():%Y%m%d_%H%M}.zip",
+    }
+
+
+def run_compare(inputs: dict) -> dict:
+    """
+    API adapter for `/api/compare`.
+    Compares 1 to MAX_BATCH_FILES uploaded sieve CSV files, optionally incorporating
+    initial mass balance, Carr/Hausner/Angle flowability metrics, acceptance limits,
+    combined + switchable histogram + individual plots with metadata footers, and
+    a downloadable ZIP archive with German-Excel CSV table + metadata.txt.
+    """
+    files_in = inputs.get("files")
+    if not isinstance(files_in, list) or len(files_in) < 1:
+        raise ValueError("Add at least 1 sieve CSV file.")
+    if len(files_in) > MAX_BATCH_FILES:
+        raise ValueError(f"At most {MAX_BATCH_FILES} files can be compared at once.")
+
+    x_max, mode = _xmax_and_mode(inputs)
+    limits = _parse_limits(inputs.get("limits"))
+
+    batches: list[dict] = []
+    used_names: dict[str, int] = {}
+    for idx, item in enumerate(files_in, 1):
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str) or not item["text"].strip():
+            raise ValueError(f"File {idx}: invalid or empty CSV upload.")
+        name = re.sub(r"\.csv$", "", str(item.get("name") or ""), flags=re.I).strip() or f"batch_{idx}"
+        used_names[name] = used_names.get(name, 0) + 1
+        if used_names[name] > 1:
+            name = f"{name} ({used_names[name]})"
+        try:
+            mesh, empty, full = load_sieve_csv(item["text"])
+            df, m = analyze_sieve_data(mesh, empty, full, x_max_um=x_max, interpolation_mode=mode)
+            details, initial = _optional_columns(item["text"])
+            bal = _compute_powder_balance(m["total_mass_g"], initial)
+            flow = _flow_metrics(_flow_columns(item["text"]))
+        except (ValueError, KeyError, TypeError, OverflowError) as exc:
+            raise ValueError(f"{name}: {exc}") from exc
+
+        _lim_rows, overall, failed = _check_limits(_collect_limit_values(m, bal, flow), limits)
+        batches.append({
+            "color": COMPARE_COLORS[(idx - 1) % len(COMPARE_COLORS)],
+            "name": name,
+            "df": df,
+            "m": m,
+            "mesh": mesh,
+            "empty": empty,
+            "full": full,
+            "details": details,
+            "bal": bal,
+            "flow": flow,
+            "overall": overall,
+            "failed": failed,
+        })
+
+    # Comparison table: include optional columns only if at least one batch provides them
+    has_details = any(b["details"] for b in batches)
+    has_bal = any(b["bal"] is not None for b in batches)
+    has_ch = any("carr" in b["flow"] for b in batches)
+    has_aor = any("aor" in b["flow"] for b in batches)
+
+    header = (
+        ["Batch"]
+        + (["Formulation details"] if has_details else [])
+        + ["D10 [µm]", "D50 [µm]", "D90 [µm]", "Span [µm]", "Relative span [-]", "Retained [g]"]
+        + (["Initial [g]", "Lost [g]", "Recovery [%]"] if has_bal else [])
+        + (["Bulk dens. [g/mL]", "Tapped dens. [g/mL]", "Carr index [%]", "Hausner ratio [-]"] if has_ch else [])
+        + (["Angle of repose [°]"] if has_aor else [])
+        + (["Limits"] if limits else [])
+    )
+
+    rows: list[list[str]] = []
+    for b in batches:
+        m, bal, fl = b["m"], b["bal"], b["flow"]
+        row = [b["name"]]
+        if has_details:
+            row.append(_details_text(b["details"]) or "-")
+        row += [
+            f"{m['D10_um']:.1f}",
+            f"{m['D50_um']:.1f}",
+            f"{m['D90_um']:.1f}",
+            f"{m['span_um']:.1f}",
+            f"{m['relative_span']:.3f}",
+            f"{m['total_mass_g']:.2f}",
+        ]
+        if has_bal:
+            if bal is None:
+                row += ["N/A", "N/A", "N/A"]
+            else:
+                rec_str = f"{bal['recovery_pct']:.1f}" + (" (>5% loss)" if bal["exceeds_loss_limit"] else "")
+                row += [f"{bal['initial']:.2f}", f"{bal['lost']:.2f}", rec_str]
+        if has_ch:
+            if "carr" not in fl:
+                row += ["N/A", "N/A", "N/A", "N/A"]
+            else:
+                row += [
+                    f"{fl['bulk']:.3f}",
+                    f"{fl['tapped']:.3f}",
+                    f"{fl['carr']:.1f} ({fl['carr_rating']})",
+                    f"{fl['hausner']:.3f} ({fl['hausner_rating']})",
+                ]
+        if has_aor:
+            row.append("N/A" if "aor" not in fl else f"{fl['aor']:.1f} ({fl['aor_rating']})")
+        if limits:
+            row.append(
+                f"Outside limits ({', '.join(b['failed'])})"
+                if b["overall"] == "Outside limits"
+                else (b["overall"] or "N/A")
+            )
+        rows.append(row)
+
+    footer = [
+        f"{TOOL_VERSION} | created {datetime.now():%Y-%m-%d %H:%M} | interpolation: {mode}"
+        f" | x_max: {x_max:g} um | {len(batches)} batch(es)"
+    ]
+    for b in batches:
+        line = (
+            f"{b['name']}: D50 {b['m']['D50_um']:.1f} um, retained {b['m']['total_mass_g']:.2f} g,"
+            f" hash {_hash_sieve_rows(b['mesh'], b['empty'], b['full'])}"
+        )
+        footer.append(line + (" | " + _details_text(b["details"]) if b["details"] else ""))
+
+    zip_files: dict[str, bytes] = {}
+    combined: list[dict] = []
+    individual: list[dict] = []
+    try:
+        same_classes = len({tuple(b["mesh"]) for b in batches}) == 1
+        charts = [("Cumulative undersize Q3 - all batches", "compare_Q3.png", _combined_q3(batches), None)]
+        if same_classes:
+            charts.append((
+                "Mass share per size class - all batches",
+                "compare_distribution_grouped.png",
+                _combined_density(batches, "grouped"),
+                "grouped",
+            ))
+        charts.append((
+            "Density distribution q3 - one panel per batch",
+            "compare_distribution_panels.png",
+            _combined_density(batches, "panels"),
+            "panels",
+        ))
+        if any(b["flow"] for b in batches):
+            charts.append(("Flowability comparison", "compare_flowability.png", _flow_chart(batches), None))
+
+        for title, fname, fig, variant in charts:
+            chart, raw = _chart_payload(title, fname, fig, footer)
+            chart["variant"] = variant
+            combined.append(chart)
+            zip_files[fname] = raw
+
+        for idx, b in enumerate(batches, 1):
+            lines = _meta_lines(
+                b["name"], b["mesh"], b["empty"], b["full"], b["m"], b["bal"], b["details"], b["flow"]
+            )
+            for suffix, plot_func, title, loc in (
+                ("Q3", plot_q3_cumulative, "Cumulative undersize Q3", "lower right"),
+                ("q3", plot_q3_density, "Density distribution q3", "mid right"),
+            ):
+                fname = f"{idx:02d}_{_safe_filename(b['name'])}_{suffix}.png"
+                chart, raw = _chart_payload(
+                    f"{b['name']} - {title}",
+                    fname,
+                    _single_with_box(plot_func, b, loc),
+                    lines,
+                    b["name"],
+                )
+                chart["idx"] = len(individual)
+                individual.append(chart)
+                zip_files["individual/" + fname] = raw
+    finally:
+        plt.close("all")
+
+    detail: list[dict] = []
+    for b in batches:
+        m = b["m"]
+        t_head, t_rows = _table_from_dataframe(b["df"])
+        extra: list[str] = []
+        if b["bal"] is not None:
+            loss_warn = " [>5% Ph. Eur. 2.9.38 loss warning]" if b["bal"]["exceeds_loss_limit"] else ""
+            extra.append(
+                f"Initial {b['bal']['initial']:.2f} g | lost {b['bal']['lost']:.2f} g | "
+                f"recovery {b['bal']['recovery_pct']:.1f} %{loss_warn}"
+            )
+        if b["flow"].get("carr") is not None:
+            extra.append(
+                f"Carr {b['flow']['carr']:.1f} % ({b['flow']['carr_rating']}) | "
+                f"Hausner {b['flow']['hausner']:.3f} ({b['flow']['hausner_rating']})"
+            )
+        if b["flow"].get("aor") is not None:
+            extra.append(f"Angle of repose {b['flow']['aor']:.1f}° ({b['flow']['aor_rating']})")
+        if b["details"]:
+            extra.append(_details_text(b["details"]))
+        detail.append({
+            "name": b["name"],
+            "color": b["color"],
+            "extra": extra,
+            "kpis": [
+                ["D10 [µm]", _format_num(m["D10_um"], 1), False],
+                ["D50 (Median) [µm]", _format_num(m["D50_um"], 1), True],
+                ["D90 [µm]", _format_num(m["D90_um"], 1), False],
+                ["Span (D90 − D10) [µm]", _format_num(m["span_um"], 1), False],
+                ["Relative Span [−]", _format_num(m["relative_span"], 3), False],
+                ["Total Retained Mass [g]", _format_num(m["total_mass_g"], 2), False],
+            ],
+            "note": str(m.get("interpolation_note") or ""),
+            "table_header": t_head,
+            "table_rows": t_rows,
+            "charts": [c["idx"] for c in individual if c["batch"] == b["name"]],
+        })
+
+    # Source: IETF RFC 4180 + German Excel locale convention (UTF-8 BOM, semicolon delimiter, decimal comma)
+    sio = io.StringIO()
+    writer = csv.writer(sio, delimiter=";")
+    writer.writerow(header)
+    writer.writerows([[re.sub(r"^(-?\d+)\.(\d+)$", r"\1,\2", cell) for cell in r] for r in rows])
+    zip_files["comparison_table.csv"] = ("\ufeff" + sio.getvalue()).encode("utf-8")
+    zip_files["metadata.txt"] = ("\n".join(footer) + "\n").encode("utf-8")
+
+    return {
+        "ok": True,
+        "table_header": header,
+        "table_rows": rows,
+        "combined": combined,
+        "individual": individual,
+        "detail": detail,
+        "zip": _zip_b64(zip_files),
+        "zip_name": f"batch_comparison_{datetime.now():%Y%m%d_%H%M}.zip",
+    }
+
+
+# Route dispatch table mapping all 9 calculation, comparison & report API endpoints
 CALCULATIONS = {
     "/api/sieve": run_sieve,
+    "/api/sieve_report": run_sieve_report,
     "/api/read_sieve_csv": run_read_sieve_csv,
     "/api/sample": run_load_sample,
     "/api/carr_hausner": run_carr_hausner,
     "/api/angle": run_angle,
     "/api/flow_rate": run_flow_rate,
     "/api/flowability_batch": run_flowability_batch,
+    "/api/compare": run_compare,
 }
 
 
