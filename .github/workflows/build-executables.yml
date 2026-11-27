@@ -1,0 +1,312 @@
+name: Build Offline Executables (Windows & macOS)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - LEO-prototype-merge
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-executables:
+    name: Build & Verify (${{ matrix.platform_name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform_name: Windows
+            binary_name: Group_5_tool.exe
+            artifact_name: Group_5_tool-Windows-exe
+          - os: macos-latest
+            platform_name: macOS
+            binary_name: Group_5_tool
+            artifact_name: Group_5_tool-macOS
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install scientific dependencies & PyInstaller
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas matplotlib pyinstaller
+
+      - name: Master Law syntax & embedded JS check
+        shell: bash
+        run: |
+          python -m py_compile Group_5_tool.py
+          python - <<'PY'
+          import pathlib
+          import subprocess
+          import tempfile
+          import Group_5_tool
+
+          tmp_js = pathlib.Path(tempfile.gettempdir()) / "group5_ci_check.js"
+          tmp_js.write_text(Group_5_tool.JS_APP, encoding="utf-8")
+          try:
+              subprocess.run(["node", "--check", str(tmp_js)], check=True)
+          finally:
+              tmp_js.unlink(missing_ok=True)
+          print("Master Law py_compile + node --check passed.")
+          PY
+
+      - name: Build standalone offline executable with PyInstaller
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+
+          add_data_arg = f"media{os.pathsep}media"
+          cmd = [
+              sys.executable,
+              "-m",
+              "PyInstaller",
+              "--noconfirm",
+              "--clean",
+              "--onefile",
+              "--name",
+              "Group_5_tool",
+              "--add-data",
+              add_data_arg,
+              "--hidden-import",
+              "matplotlib.backends.backend_agg",
+              "--exclude-module",
+              "tkinter",
+              "--exclude-module",
+              "_tkinter",
+              "--exclude-module",
+              "PyQt5",
+              "--exclude-module",
+              "PyQt6",
+              "--exclude-module",
+              "PySide2",
+              "--exclude-module",
+              "PySide6",
+              "--exclude-module",
+              "wx",
+              "--exclude-module",
+              "IPython",
+              "--exclude-module",
+              "pytest",
+              "--exclude-module",
+              "scipy",
+              "Group_5_tool.py",
+          ]
+          print("Executing:", " ".join(cmd))
+          subprocess.run(cmd, check=True)
+          PY
+
+      - name: Verify macOS Mach-O permissions & code signature
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          chmod 755 dist/Group_5_tool
+          codesign --verify --verbose dist/Group_5_tool
+          file dist/Group_5_tool
+
+      - name: Smoke-test compiled binary in isolated offline folder
+        shell: bash
+        env:
+          BINARY_NAME: ${{ matrix.binary_name }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import queue
+          import re
+          import shutil
+          import subprocess
+          import tempfile
+          import threading
+          import time
+          import urllib.request
+
+          binary_name = os.environ["BINARY_NAME"]
+          built_bin = pathlib.Path("dist") / binary_name
+          assert built_bin.is_file(), f"Missing built binary: {built_bin}"
+
+          def http_get(url: str) -> tuple[int, bytes]:
+              with urllib.request.urlopen(url, timeout=15) as resp:
+                  return resp.status, resp.read()
+
+          def http_post_json(url: str, payload: dict) -> tuple[int, dict]:
+              body = json.dumps(payload).encode("utf-8")
+              req = urllib.request.Request(
+                  url,
+                  data=body,
+                  headers={"Content-Type": "application/json"},
+                  method="POST",
+              )
+              with urllib.request.urlopen(req, timeout=20) as resp:
+                  return resp.status, json.loads(resp.read().decode("utf-8"))
+
+          with tempfile.TemporaryDirectory() as isolated:
+              iso_dir = pathlib.Path(isolated)
+              iso_bin = iso_dir / binary_name
+              shutil.copy2(built_bin, iso_bin)
+              if os.name != "nt":
+                  iso_bin.chmod(0o755)
+
+              env = os.environ.copy()
+              env["PYTHONUNBUFFERED"] = "1"
+              proc = subprocess.Popen(
+                  [str(iso_bin), "--no-browser"],
+                  cwd=str(iso_dir),
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+                  text=True,
+                  env=env,
+              )
+
+              line_queue: queue.Queue[str] = queue.Queue()
+
+              def _reader() -> None:
+                  assert proc.stdout is not None
+                  for line in proc.stdout:
+                      line_queue.put(line)
+
+              threading.Thread(target=_reader, daemon=True).start()
+
+              base_url = None
+              captured_lines: list[str] = []
+              deadline = time.monotonic() + 60.0
+              while time.monotonic() < deadline:
+                  if proc.poll() is not None and line_queue.empty():
+                      break
+                  try:
+                      line = line_queue.get(timeout=1.0)
+                  except queue.Empty:
+                      continue
+                  captured_lines.append(line.rstrip())
+                  match = re.search(r"(http://127\.0\.0\.1:\d+)/", line)
+                  if match:
+                      base_url = match.group(1)
+                      break
+
+              assert base_url is not None, (
+                  f"Executable did not start HTTP server within timeout. Output:\n"
+                  + "\n".join(captured_lines)
+              )
+              print(f"Standalone binary listening at {base_url}")
+
+              try:
+                  # 1. Main UI loads offline
+                  status, html_bytes = http_get(f"{base_url}/")
+                  assert status == 200
+                  assert b"Powder Characterization Tool" in html_bytes
+
+                  # 2. Bundled sys._MEIPASS/media SVGs work with ZERO external media/ folder
+                  status, media_bytes = http_get(f"{base_url}/api/media")
+                  assert status == 200
+                  media_payload = json.loads(media_bytes.decode("utf-8"))
+                  assert media_payload["ok"] is True
+                  assert media_payload["media_dir_exists"] is True
+                  assert len(media_payload["all_files"]) == 4, media_payload
+
+                  status, svg_bytes = http_get(f"{base_url}/media/sieve_analysis.svg")
+                  assert status == 200
+                  assert b"<svg" in svg_bytes
+
+                  # 3. Scientific calculation + Matplotlib Agg PNG + ZIP report inside frozen binary
+                  _, sample_data = http_post_json(f"{base_url}/api/sample", {"sample": "sieve_pd01"})
+                  assert sample_data["ok"] is True
+
+                  _, sieve_res = http_post_json(
+                      f"{base_url}/api/sieve",
+                      {"rows": sample_data["rows"], "x_max_um": 2000, "interp_mode": "linear"},
+                  )
+                  assert sieve_res["ok"] is True
+                  assert len(sieve_res["charts"]) == 2
+
+                  _, report_res = http_post_json(
+                      f"{base_url}/api/sieve_report",
+                      {"rows": sample_data["rows"], "x_max_um": 2000, "initial_mass": 65.5},
+                  )
+                  assert report_res["ok"] is True
+                  assert len(report_res["zip"]) > 1000
+
+                  # 4. Optional external media/ drop-in folder beside executable works dynamically
+                  ext_media = iso_dir / "media"
+                  ext_media.mkdir()
+                  (ext_media / "sieve_extra_test.svg").write_text("<svg>external</svg>", encoding="utf-8")
+                  _, media_bytes_after = http_get(f"{base_url}/api/media")
+                  media_after = json.loads(media_bytes_after.decode("utf-8"))
+                  assert len(media_after["all_files"]) == 5
+                  status_ext, ext_svg = http_get(f"{base_url}/media/sieve_extra_test.svg")
+                  assert status_ext == 200
+                  assert b"external" in ext_svg
+
+                  # 5. Clean shutdown via /api/quit
+                  _, quit_res = http_post_json(f"{base_url}/api/quit", {})
+                  assert quit_res["ok"] is True
+                  rc = proc.wait(timeout=15)
+                  assert rc == 0, f"Expected exit code 0 after /api/quit, got {rc}"
+                  print("All standalone binary smoke tests passed!")
+              finally:
+                  if proc.poll() is None:
+                      proc.kill()
+                      proc.wait(timeout=5)
+          PY
+
+      - name: Stage Windows artifact
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p release_out
+          cp dist/Group_5_tool.exe release_out/Group_5_tool.exe
+          ls -lh release_out/
+
+      - name: Stage macOS artifact (preserving +x Unix permissions via ditto)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p release_out
+          chmod 755 dist/Group_5_tool
+          ditto -c -k dist/Group_5_tool release_out/Group_5_tool-macOS-executable.zip
+          cat > release_out/README_macOS.txt <<'EOF'
+          Group 5 — Powder Characterization Tool (macOS Standalone Offline Executable)
+          ===========================================================================
+          1. Double-click `Group_5_tool-macOS-executable.zip` to extract `Group_5_tool`
+             (this inner archive preserves macOS executable `+x` permissions).
+          2. Double-click `Group_5_tool` in Finder (or run `./Group_5_tool` in Terminal)
+             to start the local offline server and open the tool in your browser.
+          3. Note (first launch of downloaded unsigned macOS binaries):
+             If macOS Gatekeeper blocks the first launch, right-click `Group_5_tool` ->
+             click "Open", or run once in Terminal:
+                 xattr -d com.apple.quarantine Group_5_tool
+                 ./Group_5_tool
+          4. Optional: place a `media/` folder beside `Group_5_tool` to add custom
+             experiment photos or videos (default SVG schematics are already bundled).
+          EOF
+          ls -lh release_out/
+
+      - name: Upload standalone executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: release_out/*
+          if-no-files-found: error
+          retention-days: 90
