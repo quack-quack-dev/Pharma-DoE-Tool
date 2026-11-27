@@ -45,11 +45,12 @@ import base64
 import csv
 from datetime import datetime
 import hashlib
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 import importlib
 import io
 import json
 import math
+import multiprocessing
 from pathlib import Path
 import re
 import sys
@@ -60,6 +61,31 @@ import webbrowser
 import zipfile
 
 REQUIRED_PACKAGES = ("numpy", "pandas", "matplotlib")  # Source: Group 5 Offline Runtime Specification
+
+
+def _safe_print(message: str) -> None:
+    """
+    Writes a status line to stdout when a console stream is attached, silently
+    ignoring detached streams (e.g., Windows pythonw / GUI subsystem launches)
+    and degrading non-ASCII glyphs safely on legacy Windows codepages (cp437/cp850).
+    """
+    # Source: Zero-Crash Protocol (Rule #3) / PyInstaller Windows Console & Subsystem Guard
+    stream = getattr(sys, "stdout", None)
+    if stream is None:
+        return
+    try:
+        stream.write(f"{message}\n")
+        stream.flush()
+    except UnicodeEncodeError:
+        try:
+            enc = getattr(stream, "encoding", None) or "ascii"
+            safe_msg = message.encode(enc, errors="replace").decode(enc, errors="replace")
+            stream.write(f"{safe_msg}\n")
+            stream.flush()
+        except (OSError, ValueError, AttributeError):
+            return
+    except (OSError, ValueError, AttributeError):
+        return
 
 
 def check_dependencies() -> None:
@@ -75,9 +101,9 @@ def check_dependencies() -> None:
             missing.append(pkg)
 
     if missing:
-        print("Error: Missing required Python package(s): " + ", ".join(missing))
-        print("Install them once using:")
-        print("    pip install " + " ".join(REQUIRED_PACKAGES))
+        _safe_print("Error: Missing required Python package(s): " + ", ".join(missing))
+        _safe_print("Install them once using:")
+        _safe_print("    pip install " + " ".join(REQUIRED_PACKAGES))
         sys.exit(1)
 
 
@@ -98,10 +124,71 @@ import matplotlib.pyplot as plt
 # Source: Group 5 Software Versioning Metadata (embedded in exported PNG/ZIP reports)
 TOOL_VERSION = "Group 5 Powder Characterization Tool v1.2"
 
-# Source: Python Standard Library (pathlib) — dynamic relative path resolution
-# Always resolves media/ relative to this script's runtime location (never hardcoded absolute paths).
-SCRIPT_DIR: Path = Path(__file__).resolve().parent
-MEDIA_DIR: Path = SCRIPT_DIR / "media"
+
+def _get_executable_base_dir() -> Path:
+    """
+    Resolves the external directory containing the running script or frozen binary.
+    If executed from inside a macOS .app bundle (.../Name.app/Contents/MacOS/binary),
+    resolves to the parent folder beside Name.app so optional external media/ folders
+    placed next to the application are discovered automatically.
+    """
+    # Source: Python Standard Library (pathlib, sys) & PyInstaller Runtime Information (sys.frozen)
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        if (
+            exe_dir.name == "MacOS"
+            and exe_dir.parent.name == "Contents"
+            and exe_dir.parent.parent.suffix.lower() == ".app"
+        ):
+            return exe_dir.parent.parent.parent
+        return exe_dir
+    return Path(__file__).resolve().parent
+
+
+def _get_bundled_media_dir() -> Path | None:
+    """
+    Returns the bundled media/ directory extracted by PyInstaller (sys._MEIPASS / 'media')
+    when running as a frozen executable, or None in standard Python script mode.
+    """
+    # Source: PyInstaller Bootloader Specification (sys._MEIPASS temporary bundle root)
+    if not getattr(sys, "frozen", False):
+        return None
+    meipass = getattr(sys, "_MEIPASS", None)
+    if not meipass:
+        return None
+    return Path(meipass).resolve() / "media"
+
+
+def _resolve_default_media_dir() -> Path:
+    """
+    Resolves the default media/ directory dynamically relative to the script or
+    PyInstaller executable: prefers an external media/ folder beside the binary
+    when present, falling back to bundled sys._MEIPASS/media in frozen mode.
+    """
+    # Source: Group 5 Dynamic Relative Path & Offline Bundle Specification (Rule #2)
+    external_media = _get_executable_base_dir() / "media"
+    try:
+        if external_media.is_dir():
+            return external_media
+    except OSError:
+        pass
+
+    bundled_media = _get_bundled_media_dir()
+    if bundled_media is not None:
+        try:
+            if bundled_media.is_dir():
+                return bundled_media
+        except OSError:
+            pass
+
+    return external_media
+
+
+# Source: Python Standard Library (pathlib) & PyInstaller Runtime Specification — dynamic relative paths
+# Always resolves media/ relative to the script or executable (never hardcoded absolute paths).
+SCRIPT_DIR: Path = _get_executable_base_dir()
+MEDIA_DIR: Path = _resolve_default_media_dir()
+_INITIAL_MEDIA_DIR: Path = MEDIA_DIR
 
 # Source: IANA Media Types (RFC 6838) — offline MIME mapping for external media/ assets
 ALLOWED_MEDIA_TYPES: dict[str, str] = {
@@ -5899,12 +5986,39 @@ def _humanize_media_label(rel_posix: str) -> str:
     return " ".join(word.capitalize() for word in stem.split()) if stem else rel_posix
 
 
+def get_media_roots() -> list[Path]:
+    """
+    Returns ordered candidate media/ root directories (highest priority first):
+      - If MEDIA_DIR was explicitly reassigned (e.g., in tests), uses [MEDIA_DIR].
+      - In frozen PyInstaller mode, checks external media/ beside the executable
+        (or beside the macOS .app bundle) first so optional user-added files override
+        or extend defaults, then falls back to bundled sys._MEIPASS/media so single-file
+        executables work 100% standalone with zero external folders.
+      - In standard Python script mode, checks [SCRIPT_DIR / 'media'].
+    """
+    # Source: Group 5 Dynamic Relative Path & PyInstaller Packaging Specification (Rule #2)
+    if MEDIA_DIR != _INITIAL_MEDIA_DIR:
+        return [MEDIA_DIR]
+
+    if getattr(sys, "frozen", False):
+        roots: list[Path] = []
+        external_media = _get_executable_base_dir() / "media"
+        roots.append(external_media)
+        bundled_media = _get_bundled_media_dir()
+        if bundled_media is not None and bundled_media != external_media:
+            roots.append(bundled_media)
+        return roots
+
+    return [_get_executable_base_dir() / "media"]
+
+
 def resolve_media_file(rel_path: str) -> tuple[Path, str] | None:
     """
-    Resolves a requested relative path strictly inside MEDIA_DIR
-    (Path(__file__).resolve().parent / "media") without using hardcoded
-    absolute paths. Blocks directory traversal, symlinks escaping media/,
-    and disallowed file extensions.
+    Resolves a requested relative path strictly inside active media/ roots
+    (external media/ beside script/executable, falling back to bundled
+    sys._MEIPASS/media in PyInstaller frozen mode) without hardcoded absolute
+    paths. Blocks directory traversal, symlinks escaping media/, and disallowed
+    file extensions.
     """
     if not isinstance(rel_path, str) or not rel_path:
         return None
@@ -5917,46 +6031,53 @@ def resolve_media_file(rel_path: str) -> tuple[Path, str] | None:
     if rel_candidate.is_absolute() or ".." in rel_candidate.parts:
         return None
 
-    try:
-        media_root = MEDIA_DIR.resolve()
-        if not media_root.is_dir():
-            return None
-        candidate = (media_root / rel_candidate).resolve()
-        # Strict containment check prevents any path traversal or symlink escape
-        candidate.relative_to(media_root)
-    except (OSError, ValueError):
+    # Hide dotfiles / hidden path segments consistently with list_available_media()
+    if any(part.startswith(".") for part in rel_candidate.parts):
         return None
 
-    if not candidate.is_file():
-        return None
+    for raw_root in get_media_roots():
+        try:
+            media_root = raw_root.resolve()
+            if not media_root.is_dir():
+                continue
+            candidate = (media_root / rel_candidate).resolve()
+            # Strict containment check prevents any path traversal or symlink escape
+            candidate.relative_to(media_root)
+        except (OSError, ValueError):
+            continue
 
-    suffix = candidate.suffix.lower()
-    content_type = ALLOWED_MEDIA_TYPES.get(suffix)
-    if content_type is None:
-        return None
+        if not candidate.is_file():
+            continue
 
-    return candidate, content_type
+        suffix = candidate.suffix.lower()
+        content_type = ALLOWED_MEDIA_TYPES.get(suffix)
+        if content_type is None:
+            continue
+
+        return candidate, content_type
+
+    return None
 
 
 def list_available_media() -> dict:
     """
-    Scans MEDIA_DIR dynamically relative to the running script and categorizes
-    discovered offline media files by experiment tab. Never crashes if media/
-    is absent or unreadable.
+    Scans active media/ directory roots dynamically relative to the running script
+    or PyInstaller bundle and categorizes discovered offline media files by
+    experiment tab. Never crashes if media/ is absent or unreadable.
     """
     experiments: dict[str, list[dict]] = {key: [] for key in EXPERIMENT_MEDIA_PREFIXES}
     all_files: list[dict] = []
+    valid_roots: list[Path] = []
 
-    try:
-        media_root = MEDIA_DIR.resolve()
-        if not media_root.is_dir():
-            return {
-                "ok": True,
-                "media_dir_exists": False,
-                "experiments": experiments,
-                "all_files": all_files,
-            }
-    except OSError:
+    for raw_root in get_media_roots():
+        try:
+            resolved_root = raw_root.resolve()
+            if resolved_root.is_dir() and resolved_root not in valid_roots:
+                valid_roots.append(resolved_root)
+        except OSError:
+            continue
+
+    if not valid_roots:
         return {
             "ok": True,
             "media_dir_exists": False,
@@ -5964,29 +6085,43 @@ def list_available_media() -> dict:
             "all_files": all_files,
         }
 
-    try:
-        discovered = sorted(media_root.rglob("*"), key=lambda p: p.as_posix().lower())
-    except OSError:
-        discovered = []
+    seen_rel_paths: set[str] = set()
+    discovered_items: list[tuple[str, Path, Path]] = []
 
-    for entry in discovered:
+    for media_root in valid_roots:
         try:
-            if not entry.is_file():
+            entries = sorted(media_root.rglob("*"), key=lambda p: p.as_posix().lower())
+        except OSError:
+            entries = []
+
+        for entry in entries:
+            try:
+                if not entry.is_file():
+                    continue
+                resolved = entry.resolve()
+                rel_path = resolved.relative_to(media_root)
+            except (OSError, ValueError):
                 continue
-            resolved = entry.resolve()
-            rel_path = resolved.relative_to(media_root)
-        except (OSError, ValueError):
-            continue
 
-        # Skip hidden files or dotfiles (e.g., .DS_Store)
-        if any(part.startswith(".") for part in rel_path.parts):
-            continue
+            # Skip hidden files or dotfiles (e.g., .DS_Store)
+            if any(part.startswith(".") for part in rel_path.parts):
+                continue
 
+            suffix = resolved.suffix.lower()
+            if suffix not in ALLOWED_MEDIA_TYPES:
+                continue
+
+            rel_posix = rel_path.as_posix()
+            dedup_key = rel_posix.lower()
+            if dedup_key in seen_rel_paths:
+                continue
+            seen_rel_paths.add(dedup_key)
+            discovered_items.append((rel_posix, rel_path, resolved))
+
+    discovered_items.sort(key=lambda tup: tup[0].lower())
+
+    for rel_posix, rel_path, resolved in discovered_items:
         suffix = resolved.suffix.lower()
-        if suffix not in ALLOWED_MEDIA_TYPES:
-            continue
-
-        rel_posix = rel_path.as_posix()
         item = {
             "filename": rel_posix,
             "label": _humanize_media_label(rel_posix),
@@ -6015,6 +6150,18 @@ def list_available_media() -> dict:
 # =============================================================================
 # LOCAL OFFLINE HTTP SERVER
 # =============================================================================
+
+# Source: Matplotlib Thread-Safety Guide — serialize pyplot figure creation/closing across HTTP threads
+_CALC_LOCK = threading.Lock()
+
+
+class LocalHTTPServer(ThreadingHTTPServer):
+    """
+    Threaded 127.0.0.1 HTTP server with daemon worker threads so browser TCP
+    preconnect sockets never stall requests or block clean server shutdown.
+    """
+    daemon_threads = True
+
 
 class RequestHandler(BaseHTTPRequestHandler):
     """
@@ -6119,7 +6266,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            answer = CALCULATIONS[path](inputs)
+            with _CALC_LOCK:
+                answer = CALCULATIONS[path](inputs)
         except (ValueError, KeyError, TypeError, OverflowError) as exc:
             self.send_json(200, {"ok": False, "error": str(exc)})
             return
@@ -6138,28 +6286,32 @@ class RequestHandler(BaseHTTPRequestHandler):
 # ENTRYPOINT
 # =============================================================================
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     """
     Verifies dependencies, starts the local offline HTTP server on 127.0.0.1,
-    opens the dashboard in the default browser, and shuts down cleanly on exit.
+    opens the dashboard in the default browser (unless --no-browser is passed),
+    and shuts down cleanly on exit.
     """
     check_dependencies()
+    args = sys.argv[1:] if argv is None else list(argv)
+    open_browser = "--no-browser" not in args
 
     try:
-        server = HTTPServer(("127.0.0.1", PORT), RequestHandler)
+        server = LocalHTTPServer(("127.0.0.1", PORT), RequestHandler)
     except OSError:
         # Fallback to OS-assigned ephemeral port if PORT is already occupied
-        server = HTTPServer(("127.0.0.1", 0), RequestHandler)
+        server = LocalHTTPServer(("127.0.0.1", 0), RequestHandler)
 
     address = f"http://127.0.0.1:{server.server_address[1]}/"
-    print("Group 5 — Powder Characterization Tool (Offline Local Mode)")
-    print(f"Open in your browser: {address}")
-    print("To stop: click 'Quit Server' on the web page or press Ctrl+C here.")
+    _safe_print("Group 5 — Powder Characterization Tool (Offline Local Mode)")
+    _safe_print(f"Open in your browser: {address}")
+    _safe_print("To stop: click 'Quit Server' on the web page or press Ctrl+C here.")
 
-    try:
-        webbrowser.open(address)
-    except Exception:
-        pass
+    if open_browser:
+        try:
+            webbrowser.open(address)
+        except Exception:
+            pass
 
     try:
         server.serve_forever()
@@ -6168,8 +6320,10 @@ def main() -> None:
     finally:
         server.server_close()
 
-    print("Group 5 Powder Characterization Tool stopped cleanly.")
+    _safe_print("Group 5 Powder Characterization Tool stopped cleanly.")
 
 
 if __name__ == "__main__":
+    # Source: Python Standard Library (multiprocessing) / PyInstaller Frozen Child-Process Guard
+    multiprocessing.freeze_support()
     main()
