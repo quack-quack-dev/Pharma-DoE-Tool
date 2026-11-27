@@ -163,7 +163,7 @@ jobs:
               with urllib.request.urlopen(req, timeout=20) as resp:
                   return resp.status, json.loads(resp.read().decode("utf-8"))
 
-          with tempfile.TemporaryDirectory() as isolated:
+          with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as isolated:
               iso_dir = pathlib.Path(isolated)
               iso_bin = iso_dir / binary_name
               shutil.copy2(built_bin, iso_bin)
@@ -178,41 +178,43 @@ jobs:
                   stdout=subprocess.PIPE,
                   stderr=subprocess.STDOUT,
                   text=True,
+                  encoding="utf-8",
+                  errors="replace",
                   env=env,
               )
 
-              line_queue: queue.Queue[str] = queue.Queue()
-
-              def _reader() -> None:
-                  assert proc.stdout is not None
-                  for line in proc.stdout:
-                      line_queue.put(line)
-
-              threading.Thread(target=_reader, daemon=True).start()
-
-              base_url = None
-              captured_lines: list[str] = []
-              deadline = time.monotonic() + 60.0
-              while time.monotonic() < deadline:
-                  if proc.poll() is not None and line_queue.empty():
-                      break
-                  try:
-                      line = line_queue.get(timeout=1.0)
-                  except queue.Empty:
-                      continue
-                  captured_lines.append(line.rstrip())
-                  match = re.search(r"(http://127\.0\.0\.1:\d+)/", line)
-                  if match:
-                      base_url = match.group(1)
-                      break
-
-              assert base_url is not None, (
-                  f"Executable did not start HTTP server within timeout. Output:\n"
-                  + "\n".join(captured_lines)
-              )
-              print(f"Standalone binary listening at {base_url}")
-
               try:
+                  line_queue: queue.Queue[str] = queue.Queue()
+
+                  def _reader() -> None:
+                      assert proc.stdout is not None
+                      for line in proc.stdout:
+                          line_queue.put(line)
+
+                  threading.Thread(target=_reader, daemon=True).start()
+
+                  base_url = None
+                  captured_lines: list[str] = []
+                  deadline = time.monotonic() + 60.0
+                  while time.monotonic() < deadline:
+                      if proc.poll() is not None and line_queue.empty():
+                          break
+                      try:
+                          line = line_queue.get(timeout=1.0)
+                      except queue.Empty:
+                          continue
+                      captured_lines.append(line.rstrip())
+                      match = re.search(r"(http://127\.0\.0\.1:\d+)/", line)
+                      if match:
+                          base_url = match.group(1)
+                          break
+
+                  assert base_url is not None, (
+                      f"Executable did not start HTTP server within timeout. Output:\n"
+                      + "\n".join(captured_lines)
+                  )
+                  print(f"Standalone binary listening at {base_url}")
+
                   # 1. Main UI loads offline
                   status, html_bytes = http_get(f"{base_url}/")
                   assert status == 200
@@ -264,6 +266,8 @@ jobs:
                   assert quit_res["ok"] is True
                   rc = proc.wait(timeout=15)
                   assert rc == 0, f"Expected exit code 0 after /api/quit, got {rc}"
+                  if os.name == "nt":
+                      time.sleep(0.5)
                   print("All standalone binary smoke tests passed!")
               finally:
                   if proc.poll() is None:
